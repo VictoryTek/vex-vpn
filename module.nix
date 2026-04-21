@@ -68,9 +68,9 @@ with lib;
 
     # Ensure the pia-vpn backend service is available
     # (user is expected to also enable services.pia-vpn from tadfisher's module)
-    assertions = [
+    assertions = lib.mkIf cfg.enable [
       {
-        assertion = vpnCfg.enable or false;
+        assertion = config.services.pia-vpn.enable or false;
         message = ''
           services.pia-gui requires services.pia-vpn to be enabled.
           Add the pia-vpn module from github:tadfisher/flake and set:

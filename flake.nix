@@ -18,7 +18,7 @@
     let
       # NixOS module — works on all systems
       nixosModule = { config, lib, pkgs, ... }:
-        import ./nix/module.nix { inherit config lib pkgs self; };
+        import ./module.nix { inherit config lib pkgs self; };
 
     in flake-utils.lib.eachDefaultSystem (system:
       let
@@ -55,16 +55,23 @@
         commonArgs = {
           src = craneLib.cleanCargoSource (craneLib.path ./.);
           inherit nativeBuildInputs buildInputs;
-          # GTK4 needs GI_TYPELIB_PATH at build time for gobject-introspection
           PKG_CONFIG_PATH = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" buildInputs;
         };
 
         # Build dependencies separately for faster rebuilds (Crane pattern)
-        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          preBuild = ''
+            export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
+          '';
+        });
 
         pia-gui = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "pia-gui";
+
+          preBuild = ''
+            export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
+          '';
 
           postInstall = ''
             # Desktop entry

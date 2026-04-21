@@ -1,5 +1,5 @@
-error: can't find bin `pia-gui` at path `C:\Projects\vex-vpn\src\main.rs`
- --> C:\Projects\vex-vpn\Cargo.toml
-error: can't find bin `pia-gui` at path `C:\Projects\vex-vpn\src\main.rs`
- --> C:\Projects\vex-vpn\Cargo.toml
+error: can't find bin `pia-gui` at path `/home/nimda/Projects/vex-vpn/src/main.rs`
+ --> /home/nimda/Projects/vex-vpn/Cargo.toml
+error: can't find bin `pia-gui` at path `/home/nimda/Projects/vex-vpn/src/main.rs`
+ --> /home/nimda/Projects/vex-vpn/Cargo.toml
 error: could not compile due to 2 previous target resolution errors

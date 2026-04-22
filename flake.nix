@@ -16,9 +16,23 @@
 
   outputs = { self, nixpkgs, flake-utils, rust-overlay, crane }:
     let
-      # NixOS module — works on all systems
-      nixosModule = { config, lib, pkgs, ... }:
-        import ./module.nix { inherit config lib pkgs self; };
+      # ── NixOS modules ───────────────────────────────────────────────────────
+      # pia-vpn backend: the WireGuard/systemd service (vendored from tadfisher/flake,
+      # with DNS and iproute2 fixes). Can be used standalone without the GUI.
+      vpnModule = ./nix/module-vpn.nix;
+
+      # pia-gui frontend: the GTK4/Rust GUI. Requires pia-vpn to be enabled.
+      guiModule = { config, lib, pkgs, ... }:
+        import ./nix/module-gui.nix { inherit config lib pkgs self; };
+
+      # Combined module — the recommended entry point for most users.
+      # Imports both vpn + gui so users only need one line in their system config.
+      combinedModule = { config, lib, pkgs, ... }: {
+        imports = [
+          vpnModule
+          (import ./nix/module-gui.nix { inherit config lib pkgs self; })
+        ];
+      };
 
     in flake-utils.lib.eachDefaultSystem (system:
       let
@@ -137,8 +151,14 @@
         };
       }
     ) // {
-      # Export NixOS module at the top level (not system-specific)
-      nixosModules.default = nixosModule;
-      nixosModules.pia-gui = nixosModule;
+      # ── NixOS modules (system-independent) ──────────────────────────────────
+      # Most users: import nixosModules.default — gets both vpn backend + gui.
+      # Advanced:   import nixosModules.pia-vpn alone (headless/server use).
+      #             import nixosModules.pia-gui alone (if you manage pia-vpn separately).
+      nixosModules = {
+        default  = combinedModule;
+        pia-vpn  = vpnModule;
+        pia-gui  = guiModule;
+      };
     };
 }

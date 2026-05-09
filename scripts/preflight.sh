@@ -3,6 +3,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+echo "--- Checking formatting ---"
+nix develop --command cargo fmt --check
+
 echo "--- Running clippy ---"
 nix develop --command cargo clippy -- -D warnings
 

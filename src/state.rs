@@ -96,6 +96,9 @@ pub struct AppState {
     pub dns_leak_hint: Option<Vec<String>>,
     /// Mirror of Config::auto_reconnect at startup.
     pub auto_reconnect: bool,
+    /// Unix timestamp (seconds) when the current connection was established.
+    /// Set to Some when status transitions to Connected; cleared on disconnect.
+    pub connection_start_ts: Option<u64>,
 }
 
 impl Default for AppState {
@@ -122,6 +125,7 @@ impl AppState {
             stale_cycles: 0,
             dns_leak_hint: None,
             auto_reconnect: true,
+            connection_start_ts: None,
         }
     }
 
@@ -179,7 +183,10 @@ struct PiaPortPayload {
 // Poll loop
 // ---------------------------------------------------------------------------
 
-pub async fn poll_loop(state: Arc<RwLock<AppState>>) {
+pub async fn poll_loop(
+    state: Arc<RwLock<AppState>>,
+    state_change_tx: tokio::sync::broadcast::Sender<()>,
+) {
     let mut prev_status = ConnectionStatus::Disconnected;
     loop {
         match poll_once(&state).await {
@@ -208,12 +215,68 @@ pub async fn poll_loop(state: Arc<RwLock<AppState>>) {
         // Fire desktop notification only on variant-level status change
         // (avoids spurious spawns while Stale(n) ticks up each cycle).
         if std::mem::discriminant(&new_status) != std::mem::discriminant(&prev_status) {
+            // Broadcast state change to tray and other subscribers.
+            let _ = state_change_tx.send(());
+
             let old = prev_status.clone();
             let new = new_status.clone();
             let region = state.read().await.region.as_ref().map(|r| r.name.clone());
             tokio::task::spawn_blocking(move || {
                 notify_status_change(&old, &new, region.as_deref())
             });
+
+            // Transition: was connected, now disconnecting/error → write history record.
+            if matches!(
+                prev_status,
+                ConnectionStatus::Connected
+                    | ConnectionStatus::KillSwitchActive
+                    | ConnectionStatus::Stale(_)
+            ) && !new_status.is_connected()
+            {
+                let s = state.read().await;
+                if let Some(ts_start) = s.connection_start_ts {
+                    let reason = match &new_status {
+                        ConnectionStatus::Error(_) => "error",
+                        ConnectionStatus::Disconnected => "user",
+                        _ => "network",
+                    };
+                    let entry = crate::history::HistoryEntry {
+                        ts_start,
+                        ts_end: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        region: s
+                            .region
+                            .as_ref()
+                            .map(|r| r.name.clone())
+                            .unwrap_or_default(),
+                        bytes_rx: s.connection.as_ref().map(|c| c.rx_bytes).unwrap_or(0),
+                        bytes_tx: s.connection.as_ref().map(|c| c.tx_bytes).unwrap_or(0),
+                        disconnect_reason: reason.to_string(),
+                    };
+                    drop(s);
+                    tokio::task::spawn_blocking(move || crate::history::append_entry(&entry));
+                }
+                state.write().await.connection_start_ts = None;
+            }
+
+            // Transition: now connected → record start time.
+            if new_status.is_connected()
+                && !matches!(
+                    prev_status,
+                    ConnectionStatus::Connected
+                        | ConnectionStatus::KillSwitchActive
+                        | ConnectionStatus::Stale(_)
+                )
+            {
+                state.write().await.connection_start_ts = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                );
+            }
         }
         prev_status = new_status;
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -363,6 +426,21 @@ pub(crate) async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Helper — wg binary path
+// ---------------------------------------------------------------------------
+
+/// Returns the path to the `wg` binary, preferring the NixOS capability wrapper
+/// at `/run/wrappers/bin/wg` (which has `CAP_NET_ADMIN` set via `security.wrappers`).
+/// Falls back to `wg` in PATH for non-NixOS environments.
+fn wg_binary() -> &'static str {
+    if std::path::Path::new("/run/wrappers/bin/wg").exists() {
+        "/run/wrappers/bin/wg"
+    } else {
+        "wg"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // File readers
 // ---------------------------------------------------------------------------
 
@@ -413,7 +491,7 @@ pub(crate) fn decode_port_payload(payload: &str) -> Result<u16> {
 }
 
 async fn read_wg_stats(interface: &str) -> Result<(u64, u64)> {
-    let output = tokio::process::Command::new("wg")
+    let output = tokio::process::Command::new(wg_binary())
         .args(["show", interface, "transfer"])
         .output()
         .await?;
@@ -445,7 +523,7 @@ async fn read_wg_stats(interface: &str) -> Result<(u64, u64)> {
 /// Returns the number of seconds elapsed since the most recent peer handshake,
 /// or `None` if no handshake has occurred yet or the command fails.
 async fn read_wg_handshake(interface: &str) -> Option<u64> {
-    let output = tokio::process::Command::new("wg")
+    let output = tokio::process::Command::new(wg_binary())
         .args(["show", interface, "latest-handshakes"])
         .output()
         .await
@@ -542,7 +620,10 @@ trait WatcherNetworkManager {
 /// Subscribe to `PropertiesChanged` on pia-vpn.service and trigger an immediate
 /// `poll_once()` whenever `ActiveState` changes.  This eliminates worst-case
 /// 3 s staleness on connect/disconnect.
-pub async fn watch_vpn_unit_state(state: Arc<RwLock<AppState>>) {
+pub async fn watch_vpn_unit_state(
+    state: Arc<RwLock<AppState>>,
+    state_change_tx: tokio::sync::broadcast::Sender<()>,
+) {
     let conn = match crate::dbus::system_conn().await {
         Ok(c) => c,
         Err(e) => {
@@ -591,7 +672,10 @@ pub async fn watch_vpn_unit_state(state: Arc<RwLock<AppState>>) {
     while stream.next().await.is_some() {
         // Don't write directly — trigger a full consistent poll.
         match poll_once(&state).await {
-            Ok(()) => debug!("PropertiesChanged triggered poll"),
+            Ok(()) => {
+                let _ = state_change_tx.send(());
+                debug!("PropertiesChanged triggered poll");
+            }
             Err(e) => warn!("Triggered poll error: {}", e),
         }
     }

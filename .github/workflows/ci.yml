@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v13
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v7
+
+      - name: Check formatting
+        run: nix develop --command cargo fmt --check
+
+      - name: Clippy (zero-warning gate)
+        run: nix develop --command cargo clippy -- -D warnings
+
+      - name: Build (debug)
+        run: nix develop --command cargo build
+
+      - name: Run tests
+        run: nix develop --command cargo test
+
+      - name: Nix build (Crane — release + reproducibility check)
+        run: nix build

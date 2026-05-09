@@ -1,0 +1,37 @@
+stages:
+  - validate
+  - build
+  - test
+
+variables:
+  NIX_CONFIG: "experimental-features = nix-command flakes"
+
+default:
+  image: nixos/nix:latest
+  before_script:
+    - nix --version
+    - echo "experimental-features = nix-command flakes" >> /etc/nix/nix.conf
+
+fmt:
+  stage: validate
+  script:
+    - nix develop --command cargo fmt --check
+
+clippy:
+  stage: validate
+  script:
+    - nix develop --command cargo clippy -- -D warnings
+
+test:
+  stage: test
+  script:
+    - nix develop --command cargo test
+
+nix-build:
+  stage: build
+  script:
+    - nix build
+  artifacts:
+    paths:
+      - result/
+    expire_in: 1 week

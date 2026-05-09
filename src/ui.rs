@@ -166,7 +166,8 @@ pub fn build_ui(
     window.add_css_class("pia-window");
 
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    root.append(&build_sidebar());
+    let (sidebar_box, history_btn) = build_sidebar();
+    root.append(&sidebar_box);
 
     let initial_auto_connect = {
         // Read synchronously — at startup before the async runtime is loaded.
@@ -194,6 +195,14 @@ pub fn build_ui(
         live.server_row.connect_activated(move |_| {
             let server_page = build_server_list_page(state_c.clone(), &nav_view_c, &server_row_c);
             nav_view_c.push(&server_page);
+        });
+    }
+
+    // Wire History button from sidebar to push a history navigation page.
+    {
+        let nav_view_h = nav_view.clone();
+        history_btn.connect_clicked(move |_| {
+            nav_view_h.push(&build_history_page());
         });
     }
 
@@ -324,7 +333,7 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-fn build_sidebar() -> gtk4::Box {
+fn build_sidebar() -> (gtk4::Box, gtk4::Button) {
     let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     sidebar.add_css_class("pia-sidebar");
     sidebar.set_size_request(192, -1);
@@ -381,7 +390,93 @@ fn build_sidebar() -> gtk4::Box {
     spacer.set_vexpand(true);
     sidebar.append(&spacer);
 
-    sidebar
+    // History button — pinned at the bottom of the sidebar.
+    let history_btn = gtk4::Button::new();
+    history_btn.add_css_class("nav-btn");
+    history_btn.set_margin_start(8);
+    history_btn.set_margin_end(8);
+    history_btn.set_margin_bottom(8);
+
+    let hist_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+    hist_row.set_margin_start(8);
+
+    let hist_img = gtk4::Image::from_icon_name("document-open-recent-symbolic");
+    hist_img.set_pixel_size(16);
+
+    let hist_lbl = gtk4::Label::new(Some("History"));
+    hist_lbl.set_halign(gtk4::Align::Start);
+    hist_lbl.set_hexpand(true);
+
+    hist_row.append(&hist_img);
+    hist_row.append(&hist_lbl);
+    history_btn.set_child(Some(&hist_row));
+    sidebar.append(&history_btn);
+
+    (sidebar, history_btn)
+}
+
+// ---------------------------------------------------------------------------
+// History navigation page
+// ---------------------------------------------------------------------------
+
+fn build_history_page() -> adw::NavigationPage {
+    let list_box = gtk4::ListBox::new();
+    list_box.set_selection_mode(gtk4::SelectionMode::None);
+    list_box.add_css_class("boxed-list");
+
+    // Placeholder row shown while history is loaded off the main thread.
+    let placeholder = adw::ActionRow::new();
+    placeholder.set_title("Loading\u{2026}");
+    list_box.append(&placeholder);
+
+    let scroll = gtk4::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .vscrollbar_policy(gtk4::PolicyType::Automatic)
+        .vexpand(true)
+        .child(&list_box)
+        .build();
+
+    let clamp = adw::Clamp::new();
+    clamp.set_child(Some(&scroll));
+    clamp.set_maximum_size(600);
+    clamp.set_margin_top(12);
+    clamp.set_margin_bottom(12);
+    clamp.set_margin_start(12);
+    clamp.set_margin_end(12);
+
+    let page = adw::NavigationPage::builder()
+        .title("Connection History")
+        .child(&clamp)
+        .build();
+
+    // Load history off the GTK main thread to avoid blocking on slow disks.
+    glib::spawn_future_local(async move {
+        let entries = tokio::task::spawn_blocking(|| crate::history::load_recent(50))
+            .await
+            .unwrap_or_default();
+
+        // Clear the loading placeholder.
+        while let Some(child) = list_box.first_child() {
+            list_box.remove(&child);
+        }
+
+        if entries.is_empty() {
+            let row = adw::ActionRow::new();
+            row.set_title("No connections recorded yet");
+            list_box.append(&row);
+        } else {
+            for e in &entries {
+                let duration = crate::history::format_duration(e.ts_end.saturating_sub(e.ts_start));
+                let when = crate::history::format_timestamp(e.ts_start);
+                let row = adw::ActionRow::new();
+                row.set_title(&e.region);
+                row.set_subtitle(&format!("{} \u{2014} {}", when, duration));
+                list_box.append(&row);
+            }
+        }
+    });
+
+    page
 }
 
 // ---------------------------------------------------------------------------

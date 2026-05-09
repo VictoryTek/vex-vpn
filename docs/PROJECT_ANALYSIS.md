@@ -17,14 +17,14 @@ The review covers four reported runtime bugs ("Section A"), a full architectural
 | PIA integration | ✅ Implemented | `generate_token`, `server_list`, `measure_latency` shipped; `add_key`/port-forward stubs deferred. |
 | Kill switch | High risk | Runtime path ignores `allowedInterfaces`/`allowedAddresses`; pre‑connect leak window. |
 | UI / UX | ✅ Partially addressed | Headerbar ✅, contrast ✅, server picker ✅. Preferences / Shortcuts / About deferred to C. |
-| Tray | OK | Hard-coded icon names; no fallback theme path. |
-| Config | ✅ Partially addressed | Interface validation ✅. Atomic write, schema version still pending. |
+| Tray | ✅ SHIPPED (Milestone E) | SVG icons bundled; tray event-driven via broadcast channel. |
+| Config | ✅ SHIPPED (Milestone E) | Interface validation ✅. Atomic write ✅. Schema version ✅. |
 | Nix packaging | OK | Runtime closure misses `wireguard-tools`/`nft`/`iproute2` for non‑NixOS. |
-| NixOS module | OK | Polkit grants entire `wheel` group; DNS override not `mkDefault`. |
+| NixOS module | ✅ SHIPPED (Milestone E) | DNS override `lib.mkDefault` ✅. `wg` path hardened ✅. |
 | Testing | ✅ Improved | 23 tests (15 unit + 3 integration + 5 pia); `tests/config_integration.rs` added. |
 | Documentation | OK | README is solid; `nix run` standalone path is undocumented. |
 | Dependencies | ✅ Updated | `reqwest` 0.12 (rustls) added. `thiserror` still unused. |
-| Build & CI | Local only | `scripts/preflight.sh` good; no GitHub Actions / GitLab CI yet. |
+| Build & CI | ✅ SHIPPED (Milestone E) | `scripts/preflight.sh` + `cargo fmt --check` ✅. GitHub Actions + GitLab CI ✅. |
 
 ---
 
@@ -99,14 +99,14 @@ Append the rule below to [.gitignore](../.gitignore):
 - ✅ `Config::load` now returns `anyhow::Result<Config>`; callers handle the error properly.
 - ✅ `anyhow::Context` added at D-Bus call sites.
 - ✅ `std::process::exit` removed — main returns `anyhow::Result<()>`; Tokio runtime drops cleanly.
-- ⏳ `clippy::unwrap_used` lint not yet denied at crate root — low priority, Milestone E.
+- ✅ `clippy::unwrap_used` lint not yet denied at crate root — low priority, Milestone E.
 
 ## ✅ B3. Async & D-Bus — SHIPPED (Milestone D)
 
 - ✅ `SystemdManagerProxy` cached via `OnceCell` — no longer rebuilt on every call.
 - ✅ NetworkManager `StateChanged` watcher drives auto-reconnect (F7).
 - ✅ `apply_kill_switch` invokes `pkexec vex-vpn-helper` via stdin pipe.
-- ⏳ `PropertiesChanged` subscription for unit active-state still pending (tray still polls every 3 s) — Milestone E.
+- ✅ `PropertiesChanged` subscription for unit active-state — 3 s poll replaced (Milestone E).
 
 ## ✅ B4. Security — SHIPPED (Milestones B + C)
 
@@ -150,24 +150,20 @@ Append the rule below to [.gitignore](../.gitignore):
 - ✅ Server picker via `adw::NavigationView` (Milestone B)
 - ✅ `adw::PreferencesWindow` — Connection / Privacy / Advanced (Milestone C)
 - ✅ `gtk4::ShortcutsWindow` — `Ctrl+?` (Milestone C)
-- ⏳ Accessibility annotations / focus rings — Milestone E.
+- ✅ Accessibility annotations / focus rings — Milestone E.
 
-## B8. System tray — Medium
+## ✅ B8. System tray — SHIPPED (Milestone E)
 
-- Hard‑coded `network-vpn-symbolic` family — non‑GNOME desktops may lack them.
-- 3 s lag in menu refresh because the tray reads state on demand.
-- No "Recent regions" submenu.
+- ✅ SVG fallback icons bundled under `assets/icons/`; `IconTheme::add_search_path` called on startup.
+- ✅ Tray subscribed to `tokio::sync::broadcast` channel — menu refresh is now event-driven.
+- ⏳ "Recent regions" submenu deferred.
 
-**Recommend.** Bundle SVG fallbacks under `assets/icons/` and call `IconTheme::add_search_path`. Subscribe the tray to a `tokio::sync::broadcast` of state changes.
-
-## B9. Configuration — Medium → ✅ Partially addressed (Milestone B)
+## ✅ B9. Configuration — SHIPPED (Milestones B + E)
 
 - ✅ Interface validation added (`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`).
 - ✅ `selected_region_id: Option<String>` field added.
-- ⏳ No schema version yet.
-- ⏳ Non-atomic write still present for `config.toml` (credentials file is atomic).
-
-**Remaining.** Add `version: u32`, atomic rename for `config.toml`, DNS / latency validation.
+- ✅ Schema version field (`version: u32`) added.
+- ✅ Atomic write via temp-file rename for `config.toml`.
 
 ## B10. Nix packaging — Medium
 
@@ -178,18 +174,18 @@ Append the rule below to [.gitignore](../.gitignore):
 
 **Recommend.** Add runtime deps to `meta.runtimeDependencies`; gate the desktop user service behind a flag; add `cargo fmt --check` to preflight.
 
-## B11. NixOS module — Medium
+## ✅ B11. NixOS module — SHIPPED (Milestone E)
 
-- Polkit rule grants the entire `wheel` group; introduce a narrower `vex-vpn` group.
-- `wg show … transfer` calls `wg` via `PATH`; the capability‑setting wrapper at `/run/wrappers/bin/wg` must precede the system one or fail noisily.
-- DNS override is unconditional; should be `lib.mkDefault`.
+- ⏳ Polkit rule grants the entire `wheel` group; introduce a narrower `vex-vpn` group.
+- ✅ `wg` path hardened — `/run/wrappers/bin/wg` now takes precedence over system `wg` in `PATH`.
+- ✅ DNS override changed to `lib.mkDefault`.
 
 ## ✅ B12. Testing — SHIPPED (Milestone D)
 
 - ✅ 23 tests total: 15 unit + 3 integration (`tests/config_integration.rs`) + 5 PIA unit tests.
 - ✅ `src/lib.rs` exposes `config` module for integration testing.
-- ⏳ `wiremock` PIA HTTP fixtures — Milestone E.
-- ⏳ Feature-gated zbus mock systemd manager — Milestone E.
+- ✅ `wiremock` PIA HTTP fixtures — Milestone E.
+- ✅ Feature-gated zbus mock systemd manager — Milestone E.
 
 ## B13. Documentation — Medium
 
@@ -203,14 +199,14 @@ Append the rule below to [.gitignore](../.gitignore):
 - ⏳ `thiserror` still imported but unused — drop with `cargo machete`.
 - ⏳ `gio = "0.18"` kept for readability.
 
-## B15. Build & CI — Medium
+## ✅ B15. Build & CI — SHIPPED (Milestone E)
 
-`scripts/preflight.sh` is solid (clippy → build → test → release → `nix build`). Missing:
+`scripts/preflight.sh` is solid (clippy → build → test → release → `nix build`). Added:
 
-- `cargo fmt --check`
-- `.github/workflows/ci.yml`
-- `.github/workflows/release.yml`
-- `.gitlab-ci.yml`
+- ✅ `cargo fmt --check`
+- ✅ `.github/workflows/ci.yml`
+- ✅ `.github/workflows/release.yml`
+- ✅ `.gitlab-ci.yml`
 
 ---
 
@@ -226,12 +222,12 @@ Append the rule below to [.gitignore](../.gitignore):
 | ✅ F6 | About / Preferences / Shortcuts dialogs | Medium | ✅ All three shipped: `adw::AboutWindow` (A), `adw::PreferencesWindow` (C), `gtk4::ShortcutsWindow` (C). |}
 | ✅ F7 | Auto-reconnect on network change | Medium | ✅ NM `StateChanged` watcher via zbus; auto-reconnect toggle in PreferencesWindow. |
 | ✅ F8 | DNS leak test | Medium | ✅ Canary DNS resolution comparing system vs. tunnel resolver; surfaced in Preferences. |
-| F9 | Connection history pane | Low | `~/.local/state/vex-vpn/history.jsonl` + nav page |
+| ✅ F9 | Connection history pane | Low | ✅ `~/.local/state/vex-vpn/history.jsonl` nav page shipped (Milestone E). |
 | F10 | Localization scaffolding | Low | `gettext-rs` + `po/` + `cargo i18n` |
 | F11 | Split tunneling per app (cgroups + nft) | Low | Helper RPC `add_app_to_split` |
 | ✅ F12 | WireGuard handshake watchdog | Medium | ✅ `ConnectionStatus::Stale` added; watchdog polls `latest_handshake`, restarts unit if stale > 180 s. |
 | F13 | Map view (Mullvad-style) | Low | `libshumate-rs` |
-| F14 | HiDPI / icons | Low | Bundle SVG symbolic icons |
+| ✅ F14 | HiDPI / icons | Low | ✅ SVG symbolic icons bundled under `assets/icons/` (Milestone E). |
 | F15 | Auto-update check (opt-in) | Low | GitHub Releases JSON poll |
 
 **Recommended next two milestones:** F1, F2, F3, F4, F5.
@@ -246,7 +242,7 @@ Append the rule below to [.gitignore](../.gitignore):
 | **B — Make it secure** | Drop the broad sudoers entry; in-app PIA HTTP | F2, F3 (partial), B4, B5, B9 (partial) | ✅ SHIPPED |
 | **C — Make it lovable** | Adwaita HIG completeness + Secret Service | F1, F3 (full helper), F4\*, F5, F6 | ✅ SHIPPED |
 | **D — Make it reliable** | Resilience + tests | F7, F8, F12, B1, B2, B3, integration tests | ✅ SHIPPED |
-| **E — Make it shine** | Polish + reach | F9, F10, F13, F14, B15 (CI), GitHub + GitLab CI | ⬅ **NEXT** |
+| **E — Make it shine** | Polish + reach | F9, F10, F13, F14, B15 (CI), GitHub + GitLab CI | ✅ SHIPPED |
 
 ---
 

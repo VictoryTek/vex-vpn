@@ -52,6 +52,7 @@
           pkg-config
           wrapGAppsHook4
           gobject-introspection
+          glib   # provides glib-compile-resources for build.rs
         ];
 
         buildInputs = with pkgs; [
@@ -70,9 +71,11 @@
           src = let
             certFilter = path: type:
               type == "directory" ||
-              builtins.match ".*\\.crt$"    path != null ||
-              builtins.match ".*\\.ui$"     path != null ||
-              builtins.match ".*\\.policy$" path != null;
+              builtins.match ".*\.crt$"             path != null ||
+              builtins.match ".*\.ui$"              path != null ||
+              builtins.match ".*\.policy$"          path != null ||
+              builtins.match ".*\.svg$"             path != null ||
+              builtins.match ".*\.gresource\.xml$" path != null;
             srcFilter = path: type:
               (certFilter path type) || (craneLib.filterCargoSources path type);
           in pkgs.lib.cleanSourceWith {
@@ -112,6 +115,17 @@
             substitute nix/polkit-vex-vpn.policy \
               $out/share/polkit-1/actions/org.vex-vpn.helper.policy \
               --replace-fail '@HELPER_PATH@' "$out/libexec/vex-vpn-helper"
+
+            # Bundled SVG icons
+            install -Dm644 assets/icons/hicolor/scalable/apps/vex-vpn.svg \
+              $out/share/icons/hicolor/scalable/apps/vex-vpn.svg
+            for icon in network-vpn-symbolic network-vpn-disabled-symbolic \
+                        network-vpn-acquiring-symbolic network-vpn-no-route-symbolic; do
+              install -Dm644 assets/icons/hicolor/symbolic/apps/''${icon}.svg \
+                $out/share/icons/hicolor/symbolic/apps/''${icon}.svg
+            done
+            install -Dm644 assets/icons/icons.gresource.xml \
+              $out/share/vex-vpn/icons.gresource.xml
 
             # Desktop entry
             mkdir -p $out/share/applications

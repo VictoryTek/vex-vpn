@@ -23,6 +23,8 @@ pub fn validate_interface(name: &str) -> bool {
 /// Persists user preferences to ~/.config/vex-vpn/config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default = "default_schema_version")]
+    pub version: u32,
     pub auto_connect: bool,
     pub interface: String,    // default "wg0"
     pub max_latency_ms: u32,  // default 100
@@ -38,6 +40,10 @@ pub struct Config {
     pub auto_reconnect: bool,
 }
 
+fn default_schema_version() -> u32 {
+    1
+}
+
 fn default_kill_switch_allowed_ifaces() -> Vec<String> {
     vec!["lo".to_string()]
 }
@@ -49,6 +55,7 @@ fn default_true() -> bool {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            version: 1,
             auto_connect: false,
             interface: "wg0".to_string(),
             max_latency_ms: 100,
@@ -105,12 +112,28 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
+        self.save_to(&config_path())
+    }
+
+    /// Write config atomically to `path` via a temp file + rename.
+    /// Used directly by integration tests for isolation.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<()> {
+        use std::io::Write;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
+        let tmp_path = path.with_extension("toml.tmp");
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp_path)?;
+            f.write_all(content.as_bytes())?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
 }
@@ -134,6 +157,7 @@ mod tests {
     #[test]
     fn test_config_round_trip() {
         let original = Config {
+            version: 1,
             auto_connect: true,
             interface: "wg1".to_string(),
             max_latency_ms: 200,

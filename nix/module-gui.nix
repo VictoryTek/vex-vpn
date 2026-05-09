@@ -94,13 +94,16 @@ with lib;
     environment.pathsToLink = [ "/libexec" ];
 
     # Wire the GUI's dns.provider choice into the VPN module's dnsServers option.
-    # This overrides the default PIA DNS only if the user explicitly chose otherwise.
-    services.pia-vpn.dnsServers = {
-      pia        = [ "10.0.0.241" "10.0.0.242" ];
-      google     = [ "8.8.8.8" "8.8.4.4" ];
-      cloudflare = [ "1.1.1.1" "1.0.0.1" ];
-      custom     = cfg.dns.customServers;
-    }.${cfg.dns.provider};
+    # Wrapped in lib.mkDefault so a user's explicit dnsServers assignment takes
+    # precedence without a NixOS merge conflict.
+    services.pia-vpn.dnsServers = lib.mkDefault (
+      {
+        pia        = [ "10.0.0.241" "10.0.0.242" ];
+        google     = [ "8.8.8.8" "8.8.4.4" ];
+        cloudflare = [ "1.1.1.1" "1.0.0.1" ];
+        custom     = cfg.dns.customServers;
+      }.${cfg.dns.provider}
+    );
 
     # Kill switch via nftables (declarative ruleset, separate from the runtime toggle).
     networking.nftables.enable = mkIf cfg.killSwitch.enable true;

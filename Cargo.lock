@@ -1004,6 +1004,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glib-build-tools"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3431c56f463443cba9bc3600248bc6d680cb614c2ee1cdd39dab5415bd12ac5c"
+
+[[package]]
 name = "glib-macros"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3044,6 +3050,7 @@ dependencies = [
  "futures-util",
  "gio",
  "glib",
+ "glib-build-tools",
  "gtk4",
  "ksni",
  "libadwaita",

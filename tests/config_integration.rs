@@ -12,6 +12,7 @@ fn load_from_path_round_trip() {
     let path = dir.path().join("config.toml");
 
     let original = Config {
+        version: 1,
         auto_connect: true,
         interface: "wg1".to_string(),
         max_latency_ms: 250,
@@ -38,6 +39,7 @@ fn load_from_path_round_trip() {
         original.kill_switch_allowed_ifaces
     );
     assert_eq!(loaded.auto_reconnect, original.auto_reconnect);
+    assert_eq!(loaded.version, original.version);
 }
 
 #[test]
@@ -73,5 +75,56 @@ dns_provider = "pia"
     assert!(
         cfg.auto_reconnect,
         "auto_reconnect should default to true when absent from TOML"
+    );
+}
+
+#[test]
+fn version_field_defaults_to_1_when_missing() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("config.toml");
+
+    // Old-format TOML without version field.
+    let toml_str = r#"
+auto_connect = false
+interface = "wg0"
+max_latency_ms = 100
+dns_provider = "pia"
+"#;
+    fs::write(&path, toml_str).expect("write config");
+
+    let cfg = Config::load_from(&path).expect("load config");
+    assert_eq!(cfg.version, 1, "version should default to 1 when absent");
+}
+
+#[test]
+fn save_to_path_round_trip() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("config.toml");
+
+    let original = Config {
+        version: 1,
+        auto_connect: true,
+        interface: "wg2".to_string(),
+        max_latency_ms: 150,
+        dns_provider: "google".to_string(),
+        selected_region_id: None,
+        kill_switch_enabled: false,
+        kill_switch_allowed_ifaces: vec!["lo".to_string()],
+        auto_reconnect: true,
+    };
+
+    original.save_to(&path).expect("save config");
+
+    let loaded = Config::load_from(&path).expect("load config");
+    assert_eq!(loaded.auto_connect, original.auto_connect);
+    assert_eq!(loaded.interface, original.interface);
+    assert_eq!(loaded.max_latency_ms, original.max_latency_ms);
+    assert_eq!(loaded.dns_provider, original.dns_provider);
+    assert_eq!(loaded.version, original.version);
+    // Confirm no leftover .tmp file exists.
+    let tmp_path = path.with_extension("toml.tmp");
+    assert!(
+        !tmp_path.exists(),
+        "temp file should be cleaned up after save"
     );
 }

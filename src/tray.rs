@@ -114,13 +114,22 @@ pub fn run_tray(
     state: Arc<RwLock<AppState>>,
     tx: async_channel::Sender<TrayMessage>,
     handle: tokio::runtime::Handle,
+    mut state_change_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
-    let tray = PiaTray { state, handle, tx };
+    let tray = PiaTray {
+        state,
+        handle: handle.clone(),
+        tx,
+    };
 
-    if let Err(e) = ksni::TrayService::new(tray).run() {
-        tracing::warn!(
-            "System tray unavailable (may not be supported on this desktop): {}",
-            e
-        );
-    }
+    // ksni 0.2.x TrayService::spawn() returns () — there is no handle to call update() on.
+    // The tray reads AppState live via read_state() on every menu open, so status changes
+    // are always reflected. We still drain the broadcast receiver so the sender never blocks.
+    ksni::TrayService::new(tray).spawn();
+
+    handle.block_on(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        // Drain broadcast signals — tray reads state live on menu open, so no action needed.
+        while let Ok(()) | Err(RecvError::Lagged(_)) = state_change_rx.recv().await {}
+    });
 }

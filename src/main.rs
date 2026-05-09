@@ -1,6 +1,7 @@
 mod config;
 mod dbus;
 mod helper;
+mod history;
 mod pia;
 mod secrets;
 mod state;
@@ -31,6 +32,10 @@ fn main() -> Result<()> {
 
     info!("Starting vex-vpn");
 
+    // Embed and register compiled icon resources (must happen before GTK init).
+    gio::resources_register_include!("icons.gresource")
+        .expect("failed to register bundled GResources");
+
     // Load persisted user config (falls back to defaults on any error).
     let cfg = config::Config::load().unwrap_or_else(|e| {
         warn!("Failed to load config: {e:#}");
@@ -42,16 +47,21 @@ fn main() -> Result<()> {
 
     let app_state = Arc::new(RwLock::new(AppState::new_with_config(&cfg)));
 
+    // Create state-change broadcast channel (capacity 16 — infrequent status changes).
+    let (state_change_tx, _dummy_rx) = tokio::sync::broadcast::channel::<()>(16);
+
     // Spawn background poll loop inside the runtime.
     let state_for_poll = app_state.clone();
+    let poll_tx = state_change_tx.clone();
     rt.spawn(async move {
-        state::poll_loop(state_for_poll).await;
+        state::poll_loop(state_for_poll, poll_tx).await;
     });
 
     // Spawn VPN unit state watcher — triggers an immediate poll on ActiveState changes.
     let state_for_vpn_watch = app_state.clone();
+    let vpn_watch_tx = state_change_tx.clone();
     rt.spawn(async move {
-        state::watch_vpn_unit_state(state_for_vpn_watch).await;
+        state::watch_vpn_unit_state(state_for_vpn_watch, vpn_watch_tx).await;
     });
 
     // Spawn NetworkManager state watcher — auto-reconnects when network is restored.
@@ -63,11 +73,12 @@ fn main() -> Result<()> {
     // Channel for tray→main-window messages.
     let (tray_tx, tray_rx) = async_channel::bounded::<TrayMessage>(8);
 
-    // Spawn system tray on its own thread with its own single-threaded runtime.
+    // Spawn system tray on its own thread; pass a fresh broadcast receiver.
     let state_for_tray = app_state.clone();
     let tray_handle = rt.handle().clone();
+    let state_rx = state_change_tx.subscribe();
     std::thread::spawn(move || {
-        tray::run_tray(state_for_tray, tray_tx, tray_handle);
+        tray::run_tray(state_for_tray, tray_tx, tray_handle, state_rx);
     });
 
     // The _guard keeps the Tokio context alive so that glib::spawn_future_local
@@ -83,6 +94,12 @@ fn main() -> Result<()> {
 
     let state_for_ui = app_state.clone();
     app.connect_activate(move |app| {
+        // Register the bundled icon resource path with the default icon theme
+        // so that GTK can find our fallback symbolic icons.
+        if let Some(display) = gtk4::gdk::Display::default() {
+            gtk4::IconTheme::for_display(&display).add_resource_path("/com/vex/vpn/icons");
+        }
+
         // async_channel::Receiver is Clone — each activation gets a fresh clone
         // so re-activation (GNOME session restore) always receives the channel.
         let rx = tray_rx.clone();

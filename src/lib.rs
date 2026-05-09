@@ -3,3 +3,4 @@
 // compile from the same source so behaviour is identical.
 
 pub mod config;
+pub mod history;

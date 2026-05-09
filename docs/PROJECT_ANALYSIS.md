@@ -1,0 +1,273 @@
+# vex-vpn — Project Analysis
+
+A public engineering review of the `vex-vpn` codebase as of May 2026. This document is the actionable companion to the bug‑fix specification at `.github/docs/subagent_docs/basic_fixes_and_analysis_spec.md`. Walk down the list and tick items off as they ship.
+
+The review covers four reported runtime bugs ("Section A"), a full architectural review ("Section B"), and a prioritized feature backlog ("Section C"). Severity uses a four‑tier scale: **Critical**, **High**, **Medium**, **Low**.
+
+---
+
+## At a glance
+
+| Area | Status | Headline |
+|------|--------|----------|
+| Architecture & threading | OK with edges | GTK / Tokio / tray separation is correct; minor channel ergonomics issues. |
+| Error handling | Needs work | `unwrap_or_default` and silent fallbacks hide config / parsing failures. |
+| Async & D-Bus | OK | `zbus` 3.x usage is correct; missing PropertiesChanged subscriptions. |
+| Security | **High risk** | Plaintext creds intended; broad `sudo nft` NOPASSWD rule; helper binary unimplemented. |
+| PIA integration | **Critical gap** | `src/pia.rs` is a stub — the in‑app HTTP client does not exist yet. |
+| Kill switch | High risk | Runtime path ignores `allowedInterfaces`/`allowedAddresses`; pre‑connect leak window. |
+| UI / UX | High | No headerbar, low‑contrast CSS, no menu, no Servers / Preferences / About. |
+| Tray | OK | Hard-coded icon names; no fallback theme path. |
+| Config | OK | Non‑atomic write, no schema version, no validation. |
+| Nix packaging | OK | Runtime closure misses `wireguard-tools`/`nft`/`iproute2` for non‑NixOS. |
+| NixOS module | OK | Polkit grants entire `wheel` group; DNS override not `mkDefault`. |
+| Testing | Sparse | Six unit tests; no integration / D‑Bus / HTTP coverage. |
+| Documentation | OK | README is solid; `nix run` standalone path is undocumented. |
+| Dependencies | Tidy | `thiserror` is unused; planned `reqwest`/`oo7`/`notify-rust` adds. |
+| Build & CI | Local only | `scripts/preflight.sh` good; no GitHub Actions / GitLab CI yet. |
+
+---
+
+# Section A — Reported Bugs (all Critical)
+
+## A1. Window has no titlebar / drag handle
+
+- **Where.** [src/ui.rs](../src/ui.rs#L137-L156) — `adw::ApplicationWindow::set_content(&horizontal_box)`.
+- **Why.** `AdwApplicationWindow` ships *no* default titlebar — the caller must add one. We added a `gtk4::Box` directly, so the window has no draggable surface (especially visible on Wayland), no close/min buttons in some compositors, and no place to attach a primary menu.
+- **Fix.** Wrap the existing root in `adw::ToolbarView`, push an `adw::HeaderBar` as the top bar, hide the title text, and set the toolbar view as the window content. This is the canonical libadwaita 1.4 layout (verified via the `gnome/libadwaita` documentation set).
+- **Bonus.** The new headerbar is also where the primary menu lives (Bug A3 needs it for "Switch account…").
+
+## A2. Unreadable text — dark fonts on dark background
+
+- **Where.** Embedded `APP_CSS` in [src/ui.rs](../src/ui.rs#L16-L93). Six selectors use 0.22 – 0.40 alpha foregrounds on a `#0d1117` window — well below the 4.5 : 1 WCAG AA threshold. The libadwaita `.dim-label` rule used by `AdwActionRow` subtitles is calibrated for the default Adwaita window, which we replaced.
+- **Worst offenders.**
+  | Selector | Current | On `#0d1117` |
+  |----------|--------|---------------|
+  | `.section-title` | `rgba(255,255,255,.22)` | ≈ 2.0 : 1 |
+  | `.stat-label` | `rgba(255,255,255,.28)` | ≈ 2.4 : 1 |
+  | `.hero-ip` | `rgba(255,255,255,.30)` | ≈ 2.6 : 1 |
+  | `.nav-btn` | `rgba(255,255,255,.40)` | ≈ 3.2 : 1 |
+- **Fix.** Replace those alpha colors with solid `#a0a0a0` (≈ 6 : 1 vs. `#0d1117`) for dim text and `#fafafa` for primary text. Wrap `AdwActionRow`s in a `.boxed-list` / `.feature-list` container so they sit on a card background where `.dim-label` is legible. Full CSS replacement is in the spec.
+
+## A3. No login prompt on first run
+
+- **Where.** Three contributing factors:
+  - [src/secrets.rs](../src/secrets.rs#L1-L4) — stub.
+  - [src/pia.rs](../src/pia.rs#L1-L4) — stub.
+  - [src/main.rs](../src/main.rs#L43-L60) — `app.connect_activate` calls `ui::build_ui` unconditionally; never checks for credentials.
+- **Why.** The README's NixOS path expects `/run/secrets/pia` to exist before the app launches. `nix run github:victorytek/vex-vpn` does not produce that file, so the systemd unit fails its `ConditionFileNotEmpty`, no `region.json` is ever written, the app silently shows "Select a server" forever — and there is no UI affordance for the user to recover.
+- **Fix.** Implement a minimal `secrets::{load,save,delete}` that persists to `~/.config/vex-vpn/credentials.toml` with `0o600`. On startup, branch: if no credentials, present a modal `adw::Window` with `AdwEntryRow` + `AdwPasswordEntryRow` and a "Sign in" button that validates against PIA's `generateToken` endpoint (in the new `pia.rs`). Add a "Switch account…" entry to the new headerbar menu (Bug A1) for re-login. Move to Secret Service (`oo7` crate) in a follow-up milestone.
+
+## A4. No servers listed / no server picker
+
+- **Where.** No code path exists that *displays* a server list. Dependent on Bug A3 because `region.json` (the only present source of region data) is written by the backend after auth.
+- **Fix.** Two parts:
+  1. **Data** — implement `pia::PiaClient::server_list()` against `https://serverlist.piaservers.net/vpninfo/servers/v4`, with PIA's CA bundled via `include_bytes!`.
+  2. **UI** — add an `adw::NavigationView` containing a Dashboard page (current widgets) and a Servers page (`adw::PreferencesPage` + filterable `gtk4::ListBox`). Each row shows region name, country, port-forward badge, and live latency.
+- **Phasing.** The first PR ships the **read-only** version: list, sort, persist a favorite. Actually pinning the chosen region requires the helper binary (Section B § Security) and is deferred.
+
+## A5. (User request) `screenshots/` to `.gitignore`
+
+Append the rule below to [.gitignore](../.gitignore):
+
+```diff
+ /target/
+ /result
+ /result-*
+ flake.lock
++
++# Local UI screenshots used during development
++/screenshots/
+```
+
+---
+
+# Section B — Full Project Review
+
+## B1. Architecture & threading — Medium
+
+| Aspect | Verdict |
+|--------|---------|
+| GTK confined to main thread | ✅ |
+| Tokio shared state via `Arc<RwLock<AppState>>` | ✅ |
+| Tray on its own OS thread, callbacks `block_on` the main runtime | OK (extra hop per menu read) |
+| `Arc<Mutex<Option<Receiver>>>` for tray→UI channel | ⚠ Fragile across re‑activation |
+| `std::process::exit` skips `Drop` for runtime | ⚠ Loses pending writes |
+
+**Recommend.** Replace the `take()`-on-first-activate pattern with `async-channel` + `glib::spawn_future_local`. Drop the `process::exit` in favor of a normal `main` return so the runtime drops cleanly.
+
+## B2. Error handling — Medium
+
+- `state::read_wg_stats` parses `wg show … transfer` with `unwrap_or(0)` — silent on malformed output.
+- `tray::run_tray` only `tracing::warn!`s when the StatusNotifier host is missing; no user surface.
+- `Config::load` swallows TOML parse errors with `unwrap_or_default()` — typos silently revert to defaults.
+- D-Bus call sites lack `anyhow::Context` for the operation name.
+
+**Recommend.** Add `anyhow::Context` at every fallible boundary; allow `Config::load` to return `Result` and surface a user banner; deny `clippy::unwrap_used`/`expect_used` at crate root.
+
+## B3. Async & D-Bus — Low → Medium
+
+- `zbus` 3.x usage (`dbus_proxy`, `Connection::system().await`, `OnceCell`) is correct.
+- `SystemdManagerProxy::new` is rebuilt on every call — cheap but wasteful.
+- We poll `ActiveState` every 3 s instead of subscribing to `PropertiesChanged`; UI is up to 3 s stale.
+- `apply_kill_switch` shells out to `sudo nft -f -` — works only with NOPASSWD, blocks otherwise.
+
+**Recommend.** Cache the manager proxy in a second `OnceCell`; subscribe to property changes on the unit path; replace the `sudo nft` invocation with a polkit‑gated helper (see B4).
+
+## B4. Security — High
+
+- **Credentials at rest.** Bug A3 only adds plaintext storage. Acceptable as MVP, **must** migrate to Secret Service (via `oo7`) in milestone C.
+- **Sudoers `nft` NOPASSWD.** [nix/module-gui.nix](../nix/module-gui.nix#L150-L161) grants `wheel` users `NOPASSWD` on the entire `nft` binary. A compromised user session can wipe all firewall rules system‑wide.
+- **No TLS pinning.** `pia.rs` is unimplemented; when it lands, bundle PIA's CA (`ca.rsa.4096.crt`) and disable system trust to mitigate hostile resolvers.
+- **Subprocess argument injection.** `apply_kill_switch` interpolates `interface` into the nft template. Input is fed via stdin to `nft -f -`, **not** a shell, so there is no shell-injection vector — but `interface` should still be validated against `^[a-z][a-z0-9_-]{0,14}$` to prevent malicious nft fragments.
+- **Logs.** Current code uses `{}` formatting and never logs request bodies — fine. When `pia.rs` lands, never log tokens or password‑authenticated request bodies.
+
+**Recommend.**
+1. Replace the `sudo` rule with a polkit‑gated `vex-vpn-helper` binary that exposes typed RPC.
+2. Adopt `oo7` for credentials in milestone C.
+3. Validate `interface` early in `Config::load`.
+4. Pin the PIA CA when `pia.rs` lands.
+
+## B5. PIA integration — Critical
+
+[src/pia.rs](../src/pia.rs#L1-L4) is empty. All real PIA traffic happens in the bash script in `module-vpn.nix`. The GUI cannot:
+
+- Validate user/password
+- Fetch the region list
+- Mint a token
+- Call `addKey` for WireGuard
+- Negotiate the port‑forward signature
+
+**Recommend.** Implement `PiaClient` per the spec — `reqwest` 0.11 with `rustls`, embedded CA, async methods for `server_list`, `token`, `add_key`, `port_forward_signature`, `port_forward_bind`, `measure_latency`. Cache the server list in `~/.cache/vex-vpn/regions.json` for 6 h. Rotate the WireGuard key daily.
+
+## B6. Kill switch — High
+
+- The runtime path drops `allowedInterfaces`/`allowedAddresses` — opposite of what the user expects.
+- IPv6 OK (uses `inet`).
+- Pre‑connect leak window: enabling the switch before the tunnel is up blocks the WireGuard handshake itself.
+- Persistence reboot behavior is undocumented (only the declarative table survives).
+
+**Recommend.** Plumb the allow‑lists into the runtime ruleset; add a "pre‑connect" mode that allows the active server endpoint; document persistence in README.
+
+## B7. UI / UX — High
+
+Beyond bugs A1/A2/A4:
+
+- No `gtk4::ShortcutsWindow`.
+- No `adw::AboutWindow`.
+- No `adw::PreferencesWindow` — Auto Connect / DNS / interface live in code only.
+- No accessibility annotations or focus rings.
+- "Select a server" is the only empty‑state hint.
+
+**Recommend.** Adopt the Adwaita HIG layout — headerbar + primary menu + Adwaita pages; expose About / Preferences / Shortcuts via `gio::SimpleAction`s on the application.
+
+## B8. System tray — Medium
+
+- Hard‑coded `network-vpn-symbolic` family — non‑GNOME desktops may lack them.
+- 3 s lag in menu refresh because the tray reads state on demand.
+- No "Recent regions" submenu.
+
+**Recommend.** Bundle SVG fallbacks under `assets/icons/` and call `IconTheme::add_search_path`. Subscribe the tray to a `tokio::sync::broadcast` of state changes.
+
+## B9. Configuration — Medium
+
+- No schema version.
+- Non-atomic write (`fs::write` truncates first).
+- No validation (`interface = ""` accepted).
+
+**Recommend.** Add `version: u32`, atomic rename‑into‑place, validation for interface / DNS / latency.
+
+## B10. Nix packaging — Medium
+
+- Runtime closure misses `wireguard-tools`, `nftables`, `iproute2`, `polkit`, `dbus`. NixOS module hides this; `nix profile install` users on non‑NixOS distros find out at runtime.
+- The `Exec=vex-vpn` desktop entry assumes `vex-vpn` is on `PATH`.
+- The package's own `lib/systemd/user/vex-vpn.service` hard-codes `%h/.nix-profile/bin/vex-vpn` — collides with the module-installed unit on NixOS.
+- `cargo fmt --check` is in `checks.fmt` but missing from `scripts/preflight.sh`.
+
+**Recommend.** Add runtime deps to `meta.runtimeDependencies`; gate the desktop user service behind a flag; add `cargo fmt --check` to preflight.
+
+## B11. NixOS module — Medium
+
+- Polkit rule grants the entire `wheel` group; introduce a narrower `vex-vpn` group.
+- `wg show … transfer` calls `wg` via `PATH`; the capability‑setting wrapper at `/run/wrappers/bin/wg` must precede the system one or fail noisily.
+- DNS override is unconditional; should be `lib.mkDefault`.
+
+## B12. Testing — Medium
+
+Six unit tests; zero integration tests; no D-Bus mocking; no PIA HTTP fixtures.
+
+**Recommend.** `tests/` for config / secrets / state round‑trips; `wiremock` for PIA HTTP; feature-gated `zbus` mock systemd manager.
+
+## B13. Documentation — Medium
+
+- README assumes the NixOS module path; says nothing about `nix run` standalone limitations.
+- No `CONTRIBUTING.md`, `CHANGELOG.md`.
+- No troubleshooting section for the most common runtime failure modes (StatusNotifier missing, polkit prompts, WireGuard module not loaded).
+
+## B14. Dependency hygiene — Low
+
+- `thiserror` imported but unused — drop with `cargo machete`.
+- `gio = "0.18"` is somewhat redundant with `gtk4`'s re‑export, but kept for readability.
+- When adding `reqwest`, use `default-features = false, features = ["rustls-tls", "json", "gzip"]` to avoid OpenSSL coupling.
+
+## B15. Build & CI — Medium
+
+`scripts/preflight.sh` is solid (clippy → build → test → release → `nix build`). Missing:
+
+- `cargo fmt --check`
+- `.github/workflows/ci.yml`
+- `.github/workflows/release.yml`
+- `.gitlab-ci.yml`
+
+---
+
+# Section C — Feature Backlog
+
+| # | Feature | Severity if missing | Sketch |
+|---|---------|----------------------|--------|
+| F1 | First-run onboarding wizard | High | `adw::Carousel` — login → CA accept → kill-switch ack → auto-connect prompt |
+| F2 | Server picker with latency + favorites | High | `adw::PreferencesPage`, `gtk4::ListBox`, persisted favorites |
+| F3 | Helper binary + polkit action | High (security) | New crate target `vex-vpn-helper`; replaces sudo nft |
+| F4 | Secret Service credential storage | High (security) | `oo7::Keyring` with plaintext fallback |
+| F5 | Desktop notifications on connect/disconnect | Medium | `notify_rust::Notification` |
+| F6 | About / Preferences / Shortcuts dialogs | Medium | `adw::AboutWindow`, `adw::PreferencesWindow`, `gtk4::ShortcutsWindow` |
+| F7 | Auto-reconnect on network change | Medium | NetworkManager `StateChanged` via zbus |
+| F8 | DNS leak test | Medium | Resolve a canary against system + tunnel; compare upstream |
+| F9 | Connection history pane | Low | `~/.local/state/vex-vpn/history.jsonl` + nav page |
+| F10 | Localization scaffolding | Low | `gettext-rs` + `po/` + `cargo i18n` |
+| F11 | Split tunneling per app (cgroups + nft) | Low | Helper RPC `add_app_to_split` |
+| F12 | WireGuard handshake watchdog | Medium | Poll `latest_handshake`; restart unit if stale > 180 s |
+| F13 | Map view (Mullvad-style) | Low | `libshumate-rs` |
+| F14 | HiDPI / icons | Low | Bundle SVG symbolic icons |
+| F15 | Auto-update check (opt-in) | Low | GitHub Releases JSON poll |
+
+**Recommended next two milestones:** F1, F2, F3, F4, F5.
+
+---
+
+# Suggested milestone plan
+
+| Milestone | Goal | Items |
+|-----------|------|-------|
+| **A — Make it usable** (this PR) | Ship the four bug fixes + preflight tightening | A1, A2, A3, A4, A5 + `cargo fmt --check` |
+| **B — Make it secure** | Drop the broad sudoers entry; in-app PIA HTTP | F3, finish `pia.rs`, region pinning |
+| **C — Make it lovable** | Adwaita HIG completeness | F1, F4, F5, F6 |
+| **D — Make it reliable** | Resilience + tests | F7, F8, F12, integration tests |
+| **E — Make it shine** | Polish + reach | F9, F10, F13, F14, GitHub + GitLab CI |
+
+---
+
+## References
+
+1. GNOME HIG — Window Layouts: https://developer.gnome.org/hig/patterns/containers/
+2. libadwaita 1.4 documentation (`AdwToolbarView`, `AdwHeaderBar`): https://gnome.pages.gitlab.gnome.org/libadwaita/doc/1-latest/
+3. WCAG 2.1 — Contrast (Minimum) 1.4.3: https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html
+4. PIA Manual Connections (auth, server list, port forwarding): https://github.com/pia-foss/manual-connections
+5. WireGuard `wg(8)` reference: https://man7.org/linux/man-pages/man8/wg.8.html
+6. systemd D-Bus interface: https://www.freedesktop.org/wiki/Software/systemd/dbus/
+7. NixOS Wiki — WireGuard: https://nixos.wiki/wiki/WireGuard
+8. OWASP ASVS v4 §2 (Authentication) and §6 (Stored Cryptography): https://owasp.org/www-project-application-security-verification-standard/
+9. `oo7` Secret Service crate: https://crates.io/crates/oo7
+10. `notify-rust` crate: https://crates.io/crates/notify-rust
+11. polkit reference: https://www.freedesktop.org/software/polkit/docs/latest/polkit.8.html
+12. gtk4-rs documentation: https://gtk-rs.org/gtk4-rs/stable/latest/docs/

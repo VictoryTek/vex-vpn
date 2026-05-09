@@ -1,8 +1,8 @@
 use crate::state::{format_bytes, AppState, ConnectionStatus};
 use crate::tray::TrayMessage;
+use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use adw::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -16,8 +16,54 @@ window.pia-window { background-color: #0d1117; }
 
 .pia-sidebar {
     background-color: #0a0f16;
-    border-right: 1px solid rgba(255,255,255,0.06);
+    border-right: 1px solid rgba(255,255,255,0.10);
 }
+
+/* Section / stat labels — solid colors meeting WCAG AA on #0d1117. */
+.section-title {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .10em;
+    color: #a0a0a0;
+    margin-bottom: 6px;
+}
+.stat-label {
+    font-size: 10px;
+    color: #a0a0a0;
+    letter-spacing: .09em;
+}
+.stat-value {
+    font-size: 14px;
+    font-weight: 500;
+    color: #fafafa;
+    font-family: monospace;
+}
+.stat-value.green { color: #00c389; }
+
+.hero-location { font-size: 17px; font-weight: 600; color: #fafafa; }
+.hero-ip       { font-size: 12px; color: #a0a0a0; font-family: monospace; }
+
+.nav-btn {
+    border-radius: 8px;
+    min-height: 42px;
+    color: #c8c8c8;
+    font-size: 13px;
+}
+.nav-btn:hover  { background: rgba(255,255,255,.08); color: #ffffff; }
+.nav-btn.active { background: rgba(0,195,137,.15);  color: #00c389; }
+
+.stat-card {
+    background: #111c2a;
+    border: 1px solid rgba(255,255,255,.10);
+    border-radius: 9px;
+    padding: 11px 13px;
+}
+
+/* AdwActionRow inside .boxed-list .feature-list — bumped card bg so dim
+   subtitles still pass AA against our forced near-black window. */
+.feature-list > row { background-color: #15202b; }
+.feature-list > row .subtitle { color: #b8b8b8; opacity: 1.0; }
+.feature-list > row .title    { color: #fafafa; }
 
 .connect-btn {
     border-radius: 9999px;
@@ -28,22 +74,22 @@ window.pia-window { background-color: #0d1117; }
 }
 .connect-btn.state-disconnected {
     background: #0f1923;
-    border: 2px solid rgba(0,195,137,0.3);
+    border: 2px solid rgba(0,195,137,0.45);
     color: #00c389;
 }
 .connect-btn.state-disconnected:hover {
-    border-color: rgba(0,195,137,0.7);
-    box-shadow: 0 0 32px rgba(0,195,137,0.15);
+    border-color: rgba(0,195,137,0.85);
+    box-shadow: 0 0 32px rgba(0,195,137,0.20);
 }
 .connect-btn.state-connected {
     background: #00291b;
     border: 2px solid #00c389;
     color: #00c389;
-    box-shadow: 0 0 40px rgba(0,195,137,0.2);
+    box-shadow: 0 0 40px rgba(0,195,137,0.25);
 }
 .connect-btn.state-connecting {
-    background: #12120a;
-    border: 2px solid rgba(255,180,0,0.5);
+    background: #1a1306;
+    border: 2px solid rgba(255,180,0,0.7);
     color: #ffb400;
 }
 
@@ -54,51 +100,13 @@ window.pia-window { background-color: #0d1117; }
     font-weight: 600;
     letter-spacing: .09em;
 }
-.status-pill.state-connected    { background: rgba(0,195,137,.10); color: #00c389; }
-.status-pill.state-disconnected { background: rgba(255,255,255,.06); color: rgba(255,255,255,.4); }
-.status-pill.state-connecting   { background: rgba(255,180,0,.10); color: #ffb400; }
-.status-pill.state-error        { background: rgba(255,80,80,.10); color: #ff5050; }
+.status-pill.state-connected    { background: rgba(0,195,137,.18);  color: #00c389; }
+.status-pill.state-disconnected { background: rgba(255,255,255,.10); color: #d8d8d8; }
+.status-pill.state-connecting   { background: rgba(255,180,0,.18);  color: #ffb400; }
+.status-pill.state-error        { background: rgba(255,80,80,.18);  color: #ff7878; }
 
-.stat-card {
-    background: #111c2a;
-    border: 1px solid rgba(255,255,255,.06);
-    border-radius: 9px;
-    padding: 11px 13px;
-}
-.stat-label {
-    font-size: 10px;
-    color: rgba(255,255,255,.28);
-    letter-spacing: .09em;
-}
-.stat-value {
-    font-size: 14px;
-    font-weight: 500;
-    color: rgba(255,255,255,.85);
-    font-family: monospace;
-}
-.stat-value.green { color: #00c389; }
-
-.section-title {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: .10em;
-    color: rgba(255,255,255,.22);
-    margin-bottom: 6px;
-}
-
-.nav-btn {
-    border-radius: 8px;
-    min-height: 42px;
-    color: rgba(255,255,255,.4);
-    font-size: 13px;
-}
-.nav-btn:hover { background: rgba(255,255,255,.05); color: white; }
-.nav-btn.active { background: rgba(0,195,137,.08); color: #00c389; }
-
-.hero-location { font-size: 17px; font-weight: 600; color: #fff; }
-.hero-ip { font-size: 12px; color: rgba(255,255,255,.3); font-family: monospace; }
 .port-badge {
-    background: rgba(0,195,137,.12);
+    background: rgba(0,195,137,.18);
     color: #00c389;
     border-radius: 5px;
     padding: 1px 7px;
@@ -127,6 +135,7 @@ struct LiveWidgets {
     port_forward_sw: gtk4::Switch,
     kill_switch_updating: std::rc::Rc<std::cell::Cell<bool>>,
     port_forward_updating: std::rc::Rc<std::cell::Cell<bool>>,
+    server_row: adw::ActionRow,
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +146,7 @@ pub fn build_ui(
     app: &adw::Application,
     state: Arc<RwLock<AppState>>,
     rx: Option<std::sync::mpsc::Receiver<TrayMessage>>,
-) {
+) -> adw::ApplicationWindow {
     let provider = gtk4::CssProvider::new();
     provider.load_from_data(APP_CSS);
     gtk4::style_context_add_provider_for_display(
@@ -166,7 +175,25 @@ pub fn build_ui(
     let (main_page, live) = build_main_page(state.clone(), initial_auto_connect);
     root.append(&main_page);
 
-    window.set_content(Some(&root));
+    // Wrap content in an AdwToolbarView with an AdwHeaderBar so the window
+    // has a draggable area and somewhere to host the primary menu.
+    let header = adw::HeaderBar::new();
+    header.set_show_title(false);
+    header.set_show_end_title_buttons(true);
+    header.set_show_start_title_buttons(true);
+
+    let menu_button = gtk4::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main menu")
+        .menu_model(&build_primary_menu())
+        .build();
+    header.pack_end(&menu_button);
+
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header);
+    toolbar_view.set_content(Some(&root));
+
+    window.set_content(Some(&toolbar_view));
 
     // Drain the tray→window channel and raise the window on ShowWindow.
     if let Some(rx) = rx {
@@ -200,6 +227,7 @@ pub fn build_ui(
             port_forward_sw: live.port_forward_sw.clone(),
             kill_switch_updating: live.kill_switch_updating.clone(),
             port_forward_updating: live.port_forward_updating.clone(),
+            server_row: live.server_row.clone(),
         };
         glib::spawn_future_local(async move {
             let s = state.read().await.clone();
@@ -209,6 +237,41 @@ pub fn build_ui(
     });
 
     window.present();
+    window
+}
+
+// ---------------------------------------------------------------------------
+// Primary menu (gio::Menu) and About window
+// ---------------------------------------------------------------------------
+
+/// Build the primary application menu shown by the headerbar MenuButton.
+/// Targets `app.*` action names registered in `main.rs`.
+pub fn build_primary_menu() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let account_section = gio::Menu::new();
+    account_section.append(Some("Switch account…"), Some("app.switch-account"));
+    menu.append_section(None, &account_section);
+
+    let app_section = gio::Menu::new();
+    app_section.append(Some("About vex-vpn"), Some("app.about"));
+    app_section.append(Some("Quit"), Some("app.quit"));
+    menu.append_section(None, &app_section);
+    menu
+}
+
+/// Show an `AdwAboutWindow` transient for `parent`.
+pub fn show_about_window(parent: &adw::ApplicationWindow) {
+    let about = adw::AboutWindow::builder()
+        .transient_for(parent)
+        .modal(true)
+        .application_name("vex-vpn")
+        .application_icon("network-vpn-symbolic")
+        .developer_name("vex-vpn contributors")
+        .version(env!("CARGO_PKG_VERSION"))
+        .website("https://github.com/victorytek/vex-vpn")
+        .license_type(gtk4::License::MitX11)
+        .build();
+    about.present();
 }
 
 // ---------------------------------------------------------------------------
@@ -240,9 +303,7 @@ fn build_sidebar() -> gtk4::Box {
     sidebar.append(&logo_row);
 
     // Nav items: (icon-name, label, active)
-    let nav_items = [
-        ("go-home-symbolic", "Dashboard", true),
-    ];
+    let nav_items = [("go-home-symbolic", "Dashboard", true)];
 
     for (icon, label, active) in &nav_items {
         let btn = gtk4::Button::new();
@@ -392,6 +453,28 @@ fn build_main_page(
     hero.append(&ip_label);
     page.append(&hero);
 
+    // ── Server picker placeholder ─────────────────────────────────────────
+    // Full server list UI is deferred. This row is wired to AppState so once
+    // a region is known (today: written by the backend after auto-select) the
+    // subtitle is updated by refresh_widgets.
+    let server_group = gtk4::ListBox::new();
+    server_group.set_selection_mode(gtk4::SelectionMode::None);
+    server_group.add_css_class("boxed-list");
+    server_group.set_margin_bottom(22);
+
+    let server_row = adw::ActionRow::new();
+    server_row.set_title("Server");
+    server_row.set_subtitle("Sign in to load servers");
+    let server_icon = gtk4::Image::from_icon_name("network-server-symbolic");
+    server_icon.set_pixel_size(16);
+    server_row.add_prefix(&server_icon);
+    let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
+    chevron.add_css_class("dim-label");
+    server_row.add_suffix(&chevron);
+    server_row.set_activatable(false);
+    server_group.append(&server_row);
+    page.append(&server_group);
+
     // ── Stat cards ────────────────────────────────────────────────────────
 
     let stats_grid = gtk4::Grid::new();
@@ -418,7 +501,10 @@ fn build_main_page(
     feat_title.set_halign(gtk4::Align::Start);
     page.append(&feat_title);
 
-    let feats = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    let feats = gtk4::ListBox::new();
+    feats.set_selection_mode(gtk4::SelectionMode::None);
+    feats.add_css_class("boxed-list");
+    feats.add_css_class("feature-list");
 
     // Kill switch
     let kill_switch_updating = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -431,7 +517,9 @@ fn build_main_page(
             "Block all traffic if VPN drops",
             false,
             move |active| {
-                if guard.get() { return; }
+                if guard.get() {
+                    return;
+                }
                 let state = state_c.clone();
                 glib::spawn_future_local(async move {
                     let iface = state.read().await.interface.clone();
@@ -460,7 +548,9 @@ fn build_main_page(
             "Allow inbound connections through VPN",
             false,
             move |active| {
-                if guard.get() { return; }
+                if guard.get() {
+                    return;
+                }
                 glib::spawn_future_local(async move {
                     let res = if active {
                         crate::dbus::enable_port_forward().await
@@ -512,6 +602,7 @@ fn build_main_page(
         port_forward_sw,
         kill_switch_updating,
         port_forward_updating,
+        server_row,
     };
 
     (page, live)
@@ -523,7 +614,12 @@ fn build_main_page(
 
 /// Replace all state-* CSS classes on a widget, then add the new one.
 fn set_state_class<W: IsA<gtk4::Widget>>(widget: &W, new_class: &str) {
-    for cls in ["state-connected", "state-disconnected", "state-connecting", "state-error"] {
+    for cls in [
+        "state-connected",
+        "state-disconnected",
+        "state-connecting",
+        "state-error",
+    ] {
         widget.remove_css_class(cls);
     }
     widget.add_css_class(new_class);
@@ -573,12 +669,14 @@ fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
     // Location / IP
     if let Some(region) = &s.region {
         live.location_label.set_label(&region.name);
+        live.server_row.set_subtitle(&region.name);
     } else {
         live.location_label.set_label(if s.status.is_connected() {
             "Connected"
         } else {
             "Select a server"
         });
+        live.server_row.set_subtitle("Sign in to load servers");
     }
 
     if let Some(conn) = &s.connection {

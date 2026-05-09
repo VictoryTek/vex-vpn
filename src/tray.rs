@@ -27,7 +27,8 @@ struct PiaTray {
 
 impl PiaTray {
     fn read_state(&self) -> AppState {
-        self.handle.block_on(async { self.state.read().await.clone() })
+        self.handle
+            .block_on(async { self.state.read().await.clone() })
     }
 }
 

@@ -1,15 +1,18 @@
 mod config;
 mod dbus;
+mod secrets;
 mod state;
 mod tray;
 mod ui;
+mod ui_login;
 
 use anyhow::Result;
+use gio::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::state::AppState;
 use crate::tray::TrayMessage;
@@ -56,15 +59,78 @@ fn main() -> Result<()> {
         .application_id("com.vex.vpn.nixos")
         .build();
 
+    // Register application-level actions for the headerbar menu.
+    register_app_actions(&app);
+
     // Wrap the receiver so it can be moved into the Send closure below.
     let tray_rx = Arc::new(std::sync::Mutex::new(Some(tray_rx)));
 
     let state_for_ui = app_state.clone();
     app.connect_activate(move |app| {
         let rx = tray_rx.lock().unwrap().take();
-        ui::build_ui(app, state_for_ui.clone(), rx);
+        let window = ui::build_ui(app, state_for_ui.clone(), rx);
+
+        // First-run login: if no credentials are stored, prompt for them
+        // *after* the main window is shown so the user sees both at once.
+        match secrets::load() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                ui_login::show_login_dialog(&window, |creds| {
+                    if let Err(e) = secrets::save(&creds) {
+                        tracing::error!("save credentials: {}", e);
+                    }
+                });
+            }
+            Err(e) => warn!("load credentials: {}", e),
+        }
     });
 
     let exit_code = app.run();
     std::process::exit(exit_code.into());
+}
+
+/// Register `app.about`, `app.quit`, and `app.switch-account` actions used by
+/// the headerbar primary menu.
+fn register_app_actions(app: &adw::Application) {
+    // Quit
+    let quit_action = gio::SimpleAction::new("quit", None);
+    {
+        let app = app.clone();
+        quit_action.connect_activate(move |_, _| app.quit());
+    }
+    app.add_action(&quit_action);
+
+    // About
+    let about_action = gio::SimpleAction::new("about", None);
+    {
+        let app = app.clone();
+        about_action.connect_activate(move |_, _| {
+            if let Some(window) = app
+                .active_window()
+                .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
+            {
+                ui::show_about_window(&window);
+            }
+        });
+    }
+    app.add_action(&about_action);
+
+    // Switch account — re-prompt and overwrite stored credentials.
+    let switch_action = gio::SimpleAction::new("switch-account", None);
+    {
+        let app = app.clone();
+        switch_action.connect_activate(move |_, _| {
+            if let Some(window) = app
+                .active_window()
+                .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
+            {
+                ui_login::show_login_dialog(&window, |creds| {
+                    if let Err(e) = secrets::save(&creds) {
+                        tracing::error!("save credentials: {}", e);
+                    }
+                });
+            }
+        });
+    }
+    app.add_action(&switch_action);
 }

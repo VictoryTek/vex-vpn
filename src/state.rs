@@ -373,11 +373,11 @@ mod tests {
         assert_eq!(ConnectionStatus::Disconnected.label(), "Disconnected");
         assert_eq!(ConnectionStatus::Connecting.label(), "Connecting...");
         assert_eq!(ConnectionStatus::Connected.label(), "Connected");
-        assert_eq!(ConnectionStatus::KillSwitchActive.label(), "Kill switch active");
         assert_eq!(
-            ConnectionStatus::Error("boom".to_string()).label(),
-            "Error"
+            ConnectionStatus::KillSwitchActive.label(),
+            "Kill switch active"
         );
+        assert_eq!(ConnectionStatus::Error("boom".to_string()).label(), "Error");
     }
 
     #[test]

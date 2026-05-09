@@ -69,7 +69,10 @@
         commonArgs = {
           src = let
             certFilter = path: type:
-              type == "directory" || builtins.match ".*\\.crt$" path != null;
+              type == "directory" ||
+              builtins.match ".*\\.crt$"    path != null ||
+              builtins.match ".*\\.ui$"     path != null ||
+              builtins.match ".*\\.policy$" path != null;
             srcFilter = path: type:
               (certFilter path type) || (craneLib.filterCargoSources path type);
           in pkgs.lib.cleanSourceWith {
@@ -99,6 +102,16 @@
             # PIA CA certificate for NixOS module
             mkdir -p $out/share/pia
             cp assets/ca.rsa.4096.crt $out/share/pia/
+
+            # Helper binary (polkit-gated nft operations, runs as root)
+            mkdir -p $out/libexec
+            cp target/release/vex-vpn-helper $out/libexec/vex-vpn-helper
+
+            # Polkit action file — substitute actual store path into the XML
+            mkdir -p $out/share/polkit-1/actions
+            substitute nix/polkit-vex-vpn.policy \
+              $out/share/polkit-1/actions/org.vex-vpn.helper.policy \
+              --replace-fail '@HELPER_PATH@' "$out/libexec/vex-vpn-helper"
 
             # Desktop entry
             mkdir -p $out/share/applications

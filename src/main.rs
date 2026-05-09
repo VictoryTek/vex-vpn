@@ -1,11 +1,14 @@
 mod config;
 mod dbus;
+mod helper;
 mod pia;
 mod secrets;
 mod state;
 mod tray;
 mod ui;
 mod ui_login;
+mod ui_onboarding;
+mod ui_prefs;
 
 use anyhow::Result;
 use gio::prelude::*;
@@ -69,7 +72,6 @@ fn main() -> Result<()> {
     let state_for_ui = app_state.clone();
     app.connect_activate(move |app| {
         let rx = tray_rx.lock().unwrap().take();
-        let window = ui::build_ui(app, state_for_ui.clone(), rx);
 
         // Build the PIA client once and share it.
         let pia_client = match pia::PiaClient::new() {
@@ -80,21 +82,30 @@ fn main() -> Result<()> {
             }
         };
 
-        // First-run login: if no credentials are stored, prompt for them.
-        // If credentials exist, auto-login in the background.
-        match secrets::load() {
+        match secrets::load_sync_hint() {
             Ok(Some(creds)) => {
-                // Auto-login with existing credentials
+                // Credentials exist — show main window immediately, auto-login in background.
+                build_and_show_main_window(app, state_for_ui.clone(), rx);
                 let state = state_for_ui.clone();
-                let client = pia_client.clone();
+                let client = pia_client;
                 glib::spawn_future_local(async move {
                     auto_login(client, state, &creds.username, &creds.password).await;
                 });
             }
             Ok(None) => {
-                let state = state_for_ui.clone();
-                let client = pia_client.clone();
-                ui_login::show_login_dialog(&window, state, client);
+                // First run — show onboarding wizard; main window built on completion.
+                let app_clone = app.clone();
+                let state_clone = state_for_ui.clone();
+                let rx_shared = Arc::new(std::sync::Mutex::new(rx));
+                ui_onboarding::show_onboarding(
+                    app,
+                    state_for_ui.clone(),
+                    pia_client,
+                    move || {
+                        let rx_inner = rx_shared.lock().unwrap().take();
+                        build_and_show_main_window(&app_clone, state_clone.clone(), rx_inner);
+                    },
+                );
             }
             Err(e) => warn!("load credentials: {}", e),
         }
@@ -102,6 +113,15 @@ fn main() -> Result<()> {
 
     let exit_code = app.run();
     std::process::exit(exit_code.into());
+}
+
+/// Build the main window and make it visible.
+fn build_and_show_main_window(
+    app: &adw::Application,
+    state: Arc<RwLock<AppState>>,
+    rx: Option<std::sync::mpsc::Receiver<TrayMessage>>,
+) {
+    ui::build_ui(app, state, rx);
 }
 
 /// Background auto-login: generate token and fetch server list.
@@ -133,8 +153,8 @@ async fn auto_login(
     }
 }
 
-/// Register `app.about`, `app.quit`, and `app.switch-account` actions used by
-/// the headerbar primary menu.
+/// Register `app.about`, `app.quit`, `app.switch-account`, `app.preferences`,
+/// and `app.show-shortcuts` actions used by the headerbar primary menu.
 fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
     // Quit
     let quit_action = gio::SimpleAction::new("quit", None);
@@ -143,6 +163,7 @@ fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
         quit_action.connect_activate(move |_, _| app.quit());
     }
     app.add_action(&quit_action);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
 
     // About
     let about_action = gio::SimpleAction::new("about", None);
@@ -163,6 +184,7 @@ fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
     let switch_action = gio::SimpleAction::new("switch-account", None);
     {
         let app = app.clone();
+        let state = state.clone();
         switch_action.connect_activate(move |_, _| {
             if let Some(window) = app
                 .active_window()
@@ -180,4 +202,38 @@ fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
         });
     }
     app.add_action(&switch_action);
+
+    // Preferences — Ctrl+,
+    let prefs_action = gio::SimpleAction::new("preferences", None);
+    {
+        let app = app.clone();
+        let state_c = state.clone();
+        prefs_action.connect_activate(move |_, _| {
+            if let Some(window) = app
+                .active_window()
+                .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
+            {
+                let prefs = ui_prefs::build_preferences_window(&window, state_c.clone());
+                prefs.present();
+            }
+        });
+    }
+    app.add_action(&prefs_action);
+    app.set_accels_for_action("app.preferences", &["<Control>comma"]);
+
+    // Keyboard shortcuts — Ctrl+?
+    let shortcuts_action = gio::SimpleAction::new("show-shortcuts", None);
+    {
+        let app = app.clone();
+        shortcuts_action.connect_activate(move |_, _| {
+            if let Some(window) = app
+                .active_window()
+                .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
+            {
+                ui::show_shortcuts_window(&window);
+            }
+        });
+    }
+    app.add_action(&shortcuts_action);
+    app.set_accels_for_action("app.show-shortcuts", &["<Control>question"]);
 }

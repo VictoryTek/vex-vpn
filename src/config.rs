@@ -29,6 +29,14 @@ pub struct Config {
     pub dns_provider: String, // default "pia"
     #[serde(default)]
     pub selected_region_id: Option<String>,
+    #[serde(default)]
+    pub kill_switch_enabled: bool,
+    #[serde(default = "default_kill_switch_allowed_ifaces")]
+    pub kill_switch_allowed_ifaces: Vec<String>,
+}
+
+fn default_kill_switch_allowed_ifaces() -> Vec<String> {
+    vec!["lo".to_string()]
 }
 
 impl Default for Config {
@@ -39,6 +47,8 @@ impl Default for Config {
             max_latency_ms: 100,
             dns_provider: "pia".to_string(),
             selected_region_id: None,
+            kill_switch_enabled: false,
+            kill_switch_allowed_ifaces: vec!["lo".to_string()],
         }
     }
 }
@@ -97,6 +107,8 @@ mod tests {
         assert_eq!(c.max_latency_ms, 100);
         assert_eq!(c.dns_provider, "pia");
         assert_eq!(c.selected_region_id, None);
+        assert!(!c.kill_switch_enabled);
+        assert_eq!(c.kill_switch_allowed_ifaces, vec!["lo".to_string()]);
     }
 
     #[test]
@@ -107,6 +119,8 @@ mod tests {
             max_latency_ms: 200,
             dns_provider: "cloudflare".to_string(),
             selected_region_id: Some("us_california".to_string()),
+            kill_switch_enabled: false,
+            kill_switch_allowed_ifaces: vec![],
         };
         let serialized = toml::to_string_pretty(&original).unwrap();
         let loaded: Config = toml::from_str(&serialized).unwrap();

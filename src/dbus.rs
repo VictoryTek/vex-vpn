@@ -1,6 +1,5 @@
 use anyhow::Result;
 use tokio::sync::OnceCell;
-use tracing::warn;
 use zbus::dbus_proxy;
 use zbus::Connection;
 
@@ -105,80 +104,5 @@ async fn stop_unit(name: &str) -> Result<()> {
         .stop_unit(name, "replace")
         .await
         .map_err(|e| anyhow::anyhow!("stop_unit({}) failed: {}", name, e))?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Kill switch — nftables
-// ---------------------------------------------------------------------------
-
-/// Insert the pia_kill_switch nftables table that drops all non-VPN traffic.
-pub async fn apply_kill_switch(interface: &str) -> Result<()> {
-    if !crate::config::validate_interface(interface) {
-        anyhow::bail!("invalid interface name: {:?}", interface);
-    }
-
-    let ruleset = format!(
-        r#"table inet pia_kill_switch {{
-    chain output {{
-        type filter hook output priority 0; policy drop;
-        ct state established,related accept
-        oifname "{iface}" accept
-        oifname "lo" accept
-    }}
-    chain input {{
-        type filter hook input priority 0; policy drop;
-        ct state established,related accept
-        iifname "{iface}" accept
-        iifname "lo" accept
-    }}
-}}"#,
-        iface = interface
-    );
-
-    let mut child = tokio::process::Command::new("sudo")
-        .arg("nft")
-        .arg("-f")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("failed to spawn nft: {}", e))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(ruleset.as_bytes())
-            .await
-            .map_err(|e| anyhow::anyhow!("nft stdin write failed: {}", e))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| anyhow::anyhow!("nft wait failed: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("nft failed to apply kill switch: {}", stderr);
-    }
-    Ok(())
-}
-
-/// Remove the pia_kill_switch nftables table.
-pub async fn remove_kill_switch() -> Result<()> {
-    let output = tokio::process::Command::new("sudo")
-        .args(["nft", "delete", "table", "inet", "pia_kill_switch"])
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to spawn nft: {}", e))?;
-
-    if !output.status.success() {
-        warn!(
-            "nft delete pia_kill_switch: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
     Ok(())
 }

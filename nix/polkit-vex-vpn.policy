@@ -1,4 +1,21 @@
-<!-- Polkit action XML for vex-vpn-helper, see spec for details. -->
-<!-- This file is created as part of Phase 2 implementation. -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>vex-vpn</vendor>
+  <vendor_url>https://github.com/victorytek/vex-vpn</vendor_url>
 
-<!-- ...full XML per spec will be implemented here... -->
+  <action id="org.vex-vpn.helper.run">
+    <description>Manage VPN kill switch via nftables</description>
+    <message>Authentication is required to control the VPN kill switch</message>
+    <icon_name>network-vpn-symbolic</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

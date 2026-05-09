@@ -271,15 +271,36 @@ pub fn build_ui(
 /// Targets `app.*` action names registered in `main.rs`.
 pub fn build_primary_menu() -> gio::Menu {
     let menu = gio::Menu::new();
+
     let account_section = gio::Menu::new();
     account_section.append(Some("Switch account…"), Some("app.switch-account"));
     menu.append_section(None, &account_section);
+
+    let view_section = gio::Menu::new();
+    view_section.append(Some("Preferences"), Some("app.preferences"));
+    view_section.append(Some("Keyboard Shortcuts"), Some("app.show-shortcuts"));
+    menu.append_section(None, &view_section);
 
     let app_section = gio::Menu::new();
     app_section.append(Some("About vex-vpn"), Some("app.about"));
     app_section.append(Some("Quit"), Some("app.quit"));
     menu.append_section(None, &app_section);
+
     menu
+}
+
+/// Show the `GtkShortcutsWindow` loaded from assets/shortcuts.ui.
+pub fn show_shortcuts_window(parent: &adw::ApplicationWindow) {
+    let builder = gtk4::Builder::from_string(include_str!("../assets/shortcuts.ui"));
+    match builder.object::<gtk4::ShortcutsWindow>("help_overlay") {
+        Some(win) => {
+            win.set_transient_for(Some(parent));
+            win.present();
+        }
+        None => {
+            tracing::error!("shortcuts window object 'help_overlay' not found in XML");
+        }
+    }
 }
 
 /// Show an `AdwAboutWindow` transient for `parent`.
@@ -547,9 +568,9 @@ fn build_main_page(
                 glib::spawn_future_local(async move {
                     let iface = state.read().await.interface.clone();
                     let res = if active {
-                        crate::dbus::apply_kill_switch(&iface).await
+                        crate::helper::apply_kill_switch(&iface).await
                     } else {
-                        crate::dbus::remove_kill_switch().await
+                        crate::helper::remove_kill_switch().await
                     };
                     if let Err(e) = res {
                         tracing::error!("kill switch toggle: {}", e);

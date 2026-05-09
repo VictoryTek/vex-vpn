@@ -129,7 +129,7 @@ pub fn show_login_dialog(
                             username: username.clone(),
                             password: password.clone(),
                         };
-                        if let Err(e) = crate::secrets::save(&creds) {
+                        if let Err(e) = crate::secrets::save(&creds).await {
                             tracing::error!("save credentials: {}", e);
                         }
 

@@ -9,6 +9,10 @@ license = "MIT"
 name = "vex-vpn"
 path = "src/main.rs"
 
+[[bin]]
+name = "vex-vpn-helper"
+path = "src/bin/helper.rs"
+
 [dependencies]
 # GTK4 GUI — 0.7.x is compatible with Rust 1.75+
 gtk4 = { version = "0.7", features = ["v4_10"] }
@@ -46,6 +50,12 @@ toml = "0.8"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Desktop notifications via org.freedesktop.Notifications (D-Bus, Wayland+X11)
+notify-rust = "4"
+
+# Required for vex-vpn-helper binary (root-uid verification)
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

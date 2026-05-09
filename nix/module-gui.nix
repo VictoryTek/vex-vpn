@@ -90,6 +90,9 @@ with lib;
     # Install the GUI package system-wide.
     environment.systemPackages = [ cfg.package ];
 
+    # Expose /libexec so pkexec can find vex-vpn-helper via the system profile.
+    environment.pathsToLink = [ "/libexec" ];
+
     # Wire the GUI's dns.provider choice into the VPN module's dnsServers option.
     # This overrides the default PIA DNS only if the user explicitly chose otherwise.
     services.pia-vpn.dnsServers = {
@@ -160,23 +163,9 @@ with lib;
       });
     '';
 
-    # Allow users in 'wheel' to run specific nft commands for kill-switch management.
-    # Narrowed from full nft access to only the two commands the GUI actually uses.
-    security.sudo.extraRules = [
-      {
-        groups = [ "wheel" ];
-        commands = [
-          {
-            command = "${pkgs.nftables}/bin/nft -f -";
-            options = [ "NOPASSWD" ];
-          }
-          {
-            command = "${pkgs.nftables}/bin/nft delete table inet pia_kill_switch";
-            options = [ "NOPASSWD" ];
-          }
-        ];
-      }
-    ];
+    # Install the polkit action file for vex-vpn-helper (nftables kill switch).
+    environment.etc."polkit-1/actions/org.vex-vpn.helper.policy".source =
+      "${cfg.package}/share/polkit-1/actions/org.vex-vpn.helper.policy";
 
     # wg show is read-only; give it cap_net_admin so users can read transfer stats.
     security.wrappers.wg = {

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
-
 use crate::config::Config;
 use crate::pia;
 
@@ -158,12 +157,68 @@ struct PiaPortPayload {
 // ---------------------------------------------------------------------------
 
 pub async fn poll_loop(state: Arc<RwLock<AppState>>) {
+    let mut prev_status = ConnectionStatus::Disconnected;
     loop {
         match poll_once(&state).await {
             Ok(()) => {}
             Err(e) => warn!("Poll error: {}", e),
         }
+        let new_status = state.read().await.status.clone();
+        if new_status != prev_status {
+            let old = prev_status.clone();
+            let new = new_status.clone();
+            let region = state
+                .read()
+                .await
+                .region
+                .as_ref()
+                .map(|r| r.name.clone());
+            // Fire-and-forget: spawn_blocking so D-Bus notification call
+            // does not stall the poll loop.
+            tokio::task::spawn_blocking(move || notify_status_change(&old, &new, region.as_deref()));
+            prev_status = new_status;
+        }
         tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
+/// Send a desktop notification when the VPN connection status changes.
+fn notify_status_change(
+    old: &ConnectionStatus,
+    new: &ConnectionStatus,
+    region: Option<&str>,
+) {
+    use notify_rust::{Notification, Urgency};
+    let result = match new {
+        ConnectionStatus::Connected => {
+            let body = region
+                .map(|r| format!("Connected to {}", r))
+                .unwrap_or_else(|| "Connected".to_string());
+            Notification::new()
+                .summary("vex-vpn")
+                .body(&body)
+                .icon("network-vpn-symbolic")
+                .show()
+        }
+        ConnectionStatus::Disconnected
+            if matches!(old, ConnectionStatus::Connected | ConnectionStatus::KillSwitchActive) =>
+        {
+            Notification::new()
+                .summary("vex-vpn")
+                .body("Disconnected")
+                .icon("network-vpn-disabled-symbolic")
+                .show()
+        }
+        ConnectionStatus::Error(msg) => Notification::new()
+            .summary("vex-vpn — Connection Error")
+            .body(msg)
+            .icon("network-vpn-disabled-symbolic")
+            .urgency(Urgency::Critical)
+            .show(),
+        _ => return,
+    };
+    if let Err(e) = result {
+        warn!("Failed to send desktop notification: {}", e);
     }
 }
 

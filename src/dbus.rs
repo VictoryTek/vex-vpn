@@ -15,7 +15,7 @@ use zbus::Connection;
 trait SystemdManager {
     fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
-    fn get_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn load_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
 #[dbus_proxy(
@@ -48,9 +48,9 @@ pub async fn get_service_status(service: &str) -> Result<String> {
         .map_err(anyhow::Error::from)?;
 
     let unit_path = manager
-        .get_unit(service)
+        .load_unit(service)
         .await
-        .map_err(|e| anyhow::anyhow!("get_unit({}) failed: {}", service, e))?;
+        .map_err(|e| anyhow::anyhow!("load_unit({}) failed: {}", service, e))?;
 
     let unit = SystemdUnitProxy::builder(&conn)
         .path(unit_path.as_ref())

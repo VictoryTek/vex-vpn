@@ -127,7 +127,7 @@ live.port_forward_sw.set_active(s.port_forward_enabled);
 
 **Fix:** Replace `get_unit` with `load_unit` and add the corresponding proxy method declaration.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -208,7 +208,7 @@ pub struct App;
 | 2 | Critical | `src/tray.rs` | Tray uses dead single-threaded runtime; D-Bus calls stranded | [x] |
 | 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [x] |
 | 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [x] |
-| 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [ ] |
+| 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [x] |
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [ ] |
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [ ] |
 | 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [ ] |

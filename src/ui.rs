@@ -123,6 +123,10 @@ struct LiveWidgets {
     ul_value: gtk4::Label,
     lat_value: gtk4::Label,
     port_value: gtk4::Label,
+    kill_switch_sw: gtk4::Switch,
+    port_forward_sw: gtk4::Switch,
+    kill_switch_updating: std::rc::Rc<std::cell::Cell<bool>>,
+    port_forward_updating: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +196,10 @@ pub fn build_ui(
             ul_value: live.ul_value.clone(),
             lat_value: live.lat_value.clone(),
             port_value: live.port_value.clone(),
+            kill_switch_sw: live.kill_switch_sw.clone(),
+            port_forward_sw: live.port_forward_sw.clone(),
+            kill_switch_updating: live.kill_switch_updating.clone(),
+            port_forward_updating: live.port_forward_updating.clone(),
         };
         glib::spawn_future_local(async move {
             let s = state.read().await.clone();
@@ -407,14 +415,17 @@ fn build_main_page(
     let feats = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
 
     // Kill switch
-    {
+    let kill_switch_updating = std::rc::Rc::new(std::cell::Cell::new(false));
+    let kill_switch_sw = {
         let state_c = state.clone();
-        feats.append(&make_toggle_row(
+        let guard = kill_switch_updating.clone();
+        let (row, sw) = make_toggle_row(
             "network-vpn-symbolic",
             "Kill Switch",
             "Block all traffic if VPN drops",
             false,
             move |active| {
+                if guard.get() { return; }
                 let state = state_c.clone();
                 glib::spawn_future_local(async move {
                     let iface = state.read().await.interface.clone();
@@ -428,17 +439,22 @@ fn build_main_page(
                     }
                 });
             },
-        ));
-    }
+        );
+        feats.append(&row);
+        sw
+    };
 
     // Port forwarding
-    {
-        feats.append(&make_toggle_row(
+    let port_forward_updating = std::rc::Rc::new(std::cell::Cell::new(false));
+    let port_forward_sw = {
+        let guard = port_forward_updating.clone();
+        let (row, sw) = make_toggle_row(
             "network-transmit-receive-symbolic",
             "Port Forwarding",
             "Allow inbound connections through VPN",
             false,
             move |active| {
+                if guard.get() { return; }
                 glib::spawn_future_local(async move {
                     let res = if active {
                         crate::dbus::enable_port_forward().await
@@ -450,23 +466,28 @@ fn build_main_page(
                     }
                 });
             },
-        ));
-    }
+        );
+        feats.append(&row);
+        sw
+    };
 
     // Auto connect — persisted via config.toml
-    feats.append(&make_toggle_row(
-        "system-run-symbolic",
-        "Auto Connect",
-        "Connect on graphical login",
-        initial_auto_connect,
-        move |active| {
-            let mut cfg = crate::config::Config::load();
-            cfg.auto_connect = active;
-            if let Err(e) = cfg.save() {
-                tracing::error!("Failed to save config: {}", e);
-            }
-        },
-    ));
+    {
+        let (row, _) = make_toggle_row(
+            "system-run-symbolic",
+            "Auto Connect",
+            "Connect on graphical login",
+            initial_auto_connect,
+            move |active| {
+                let mut cfg = crate::config::Config::load();
+                cfg.auto_connect = active;
+                if let Err(e) = cfg.save() {
+                    tracing::error!("Failed to save config: {}", e);
+                }
+            },
+        );
+        feats.append(&row);
+    }
 
     page.append(&feats);
 
@@ -481,6 +502,10 @@ fn build_main_page(
         ul_value,
         lat_value,
         port_value,
+        kill_switch_sw,
+        port_forward_sw,
+        kill_switch_updating,
+        port_forward_updating,
     };
 
     (page, live)
@@ -571,6 +596,15 @@ fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
         Some(port) => live.port_value.set_label(&port.to_string()),
         None => live.port_value.set_label("—"),
     }
+
+    // Kill switch and port forward toggle sync
+    live.kill_switch_updating.set(true);
+    live.kill_switch_sw.set_active(s.kill_switch_enabled);
+    live.kill_switch_updating.set(false);
+
+    live.port_forward_updating.set(true);
+    live.port_forward_sw.set_active(s.port_forward_enabled);
+    live.port_forward_updating.set(false);
 }
 
 fn make_stat_card(label: &str, default: &str, green: bool) -> (gtk4::Box, gtk4::Label) {
@@ -601,7 +635,7 @@ fn make_toggle_row(
     subtitle: &str,
     default: bool,
     on_toggle: impl Fn(bool) + 'static,
-) -> adw::ActionRow {
+) -> (adw::ActionRow, gtk4::Switch) {
     let row = adw::ActionRow::new();
     row.set_title(title);
     row.set_subtitle(subtitle);
@@ -617,5 +651,5 @@ fn make_toggle_row(
     row.add_suffix(&sw);
     row.set_activatable_widget(Some(&sw));
 
-    row
+    (row, sw)
 }

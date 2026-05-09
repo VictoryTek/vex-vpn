@@ -113,7 +113,7 @@ live.kill_switch_sw.set_active(s.kill_switch_enabled);
 live.port_forward_sw.set_active(s.port_forward_enabled);
 ```
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -207,7 +207,7 @@ pub struct App;
 | 1 | Critical | `src/state.rs` | Wrong state dir path (`/var/lib/private/` vs `/var/lib/`) | [x] |
 | 2 | Critical | `src/tray.rs` | Tray uses dead single-threaded runtime; D-Bus calls stranded | [x] |
 | 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [x] |
-| 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [ ] |
+| 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [x] |
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [ ] |
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [ ] |
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [ ] |

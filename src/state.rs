@@ -174,7 +174,7 @@ async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
         }
     };
 
-    let state_dir = "/var/lib/private/pia-vpn"; // systemd StateDirectory with DynamicUser
+    let state_dir = "/var/lib/pia-vpn"; // systemd StateDirectory (no DynamicUser)
     let region = read_region(state_dir).await.ok();
     let wg_info = read_wireguard(state_dir).await.ok();
     let forwarded_port = read_port_forward(state_dir).await.unwrap_or(None);

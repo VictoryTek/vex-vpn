@@ -196,7 +196,7 @@ pub struct App;
 
 **Fix:** Either implement the signal bus or remove the module.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -213,4 +213,4 @@ pub struct App;
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [x] |
 | 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [x] |
 | 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [x] |
-| 10 | Low | `src/app.rs` | `App` struct is an unused stub | [ ] |
+| 10 | Low | `src/app.rs` | `App` struct is an unused stub | [x] |

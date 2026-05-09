@@ -110,21 +110,21 @@ Append the rule below to [.gitignore](../.gitignore):
 - `zbus` 3.x usage (`dbus_proxy`, `Connection::system().await`, `OnceCell`) is correct.
 - `SystemdManagerProxy::new` is rebuilt on every call — cheap but wasteful.
 - We poll `ActiveState` every 3 s instead of subscribing to `PropertiesChanged`; UI is up to 3 s stale.
-- `apply_kill_switch` shells out to `sudo nft -f -` — works only with NOPASSWD, blocks otherwise.
+- ✅ `apply_kill_switch` now invokes `pkexec vex-vpn-helper` (shipped Milestone C).
 
-**Recommend.** Cache the manager proxy in a second `OnceCell`; subscribe to property changes on the unit path; replace the `sudo nft` invocation with a polkit‑gated helper (see B4).
+**Remaining (Milestone D).** Cache the manager proxy in a `OnceCell`; subscribe to `PropertiesChanged` instead of polling.
 
-## B4. Security — High → ✅ Partially hardened (Milestone B)
+## ✅ B4. Security — SHIPPED (Milestones B + C)
 
-- **Credentials at rest.** ✅ Plaintext `credentials.toml` with `0o600`, atomic write. ⏳ Secret Service (`oo7`) deferred to Milestone C.
-- **Sudoers `nft` NOPASSWD.** ✅ Rule narrowed to `nft -f -` and `nft delete table inet pia_kill_switch` only.
-- **TLS pinning.** ✅ PIA CA bundled in `assets/ca.rsa.4096.crt` via `include_bytes!`; meta client trusts only that CA.
-- **Subprocess argument injection.** ✅ `interface` validated against `^[a-zA-Z][a-zA-Z0-9_-]{0,14}$` in both `Config::load` and `apply_kill_switch`.
-- **Token logging.** ✅ Custom `Debug` impl redacts token; never persisted to disk.
+- ✅ Credentials at rest — plaintext `credentials.toml` with `0o600` atomic write.
+- ✅ Sudoers `nft` NOPASSWD rule fully **removed** (Milestone C).
+- ✅ `vex-vpn-helper` binary via `pkexec` with `auth_admin_keep` polkit action (Milestone C).
+- ✅ nft rules piped via stdin — no TOCTOU tempfile vector.
+- ✅ TLS pinned to PIA CA for meta connections.
+- ✅ Interface validated against regex in both `Config::load` and helper.
+- ✅ Auth token redacted in `Debug`, never persisted.
 
-⏳ **Still pending:**
-1. Full polkit-gated `vex-vpn-helper` binary (replaces sudo nft entirely) — Milestone C.
-2. `oo7` Secret Service migration — Milestone C.
+⏳ `oo7` Secret Service deferred until `oo7` migrates away from `zbus 4.x`.
 
 ## ✅ B5. PIA integration — SHIPPED (Milestone B)
 
@@ -139,26 +139,24 @@ Append the rule below to [.gitignore](../.gitignore):
 - Server list caching to `~/.cache/vex-vpn/regions.json`
 - WireGuard key rotation
 
-## B6. Kill switch — High
+## B6. Kill switch — High → ✅ Partially addressed (Milestone C)
 
-- The runtime path drops `allowedInterfaces`/`allowedAddresses` — opposite of what the user expects.
-- IPv6 OK (uses `inet`).
-- Pre‑connect leak window: enabling the switch before the tunnel is up blocks the WireGuard handshake itself.
-- Persistence reboot behavior is undocumented (only the declarative table survives).
+- ✅ `kill_switch_allowed_ifaces` from config now forwarded to the helper and included in nft rules.
+- ✅ Loopback (`lo`) included by default.
+- ⏳ Pre‑connect leak window still present (Milestone D).
+- ⏳ Persistence reboot behavior undocumented.
 
-**Recommend.** Plumb the allow‑lists into the runtime ruleset; add a "pre‑connect" mode that allows the active server endpoint; document persistence in README.
+**Remaining (Milestone D).** Add a pre-connect mode that allows the selected server endpoint before the tunnel is up; document persistence in README.
 
-## B7. UI / UX — High
+## ✅ B7. UI / UX — SHIPPED (Milestones A + B + C)
 
-Beyond bugs A1/A2/A4:
-
-- No `gtk4::ShortcutsWindow`.
-- No `adw::AboutWindow`.
-- No `adw::PreferencesWindow` — Auto Connect / DNS / interface live in code only.
-- No accessibility annotations or focus rings.
-- "Select a server" is the only empty‑state hint.
-
-**Recommend.** Adopt the Adwaita HIG layout — headerbar + primary menu + Adwaita pages; expose About / Preferences / Shortcuts via `gio::SimpleAction`s on the application.
+- ✅ `adw::HeaderBar` + `adw::ToolbarView` (Milestone A)
+- ✅ WCAG-AA contrast, `.boxed-list` feature toggles (Milestone A)
+- ✅ `adw::AboutWindow` wired to primary menu (Milestone A)
+- ✅ Server picker via `adw::NavigationView` (Milestone B)
+- ✅ `adw::PreferencesWindow` — Connection / Privacy / Advanced (Milestone C)
+- ✅ `gtk4::ShortcutsWindow` — `Ctrl+?` (Milestone C)
+- ⏳ Accessibility annotations / focus rings — Milestone E.
 
 ## B8. System tray — Medium
 

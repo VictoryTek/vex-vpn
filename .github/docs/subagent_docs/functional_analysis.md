@@ -139,7 +139,7 @@ live.port_forward_sw.set_active(s.port_forward_enabled);
 
 **Fix:** Store a single `Arc<Connection>` in a `once_cell::sync::OnceCell` or `tokio::sync::OnceCell` and reuse it.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -209,7 +209,7 @@ pub struct App;
 | 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [x] |
 | 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [x] |
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [x] |
-| 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [ ] |
+| 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [x] |
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [ ] |
 | 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [ ] |
 | 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [ ] |

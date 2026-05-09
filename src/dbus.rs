@@ -1,4 +1,5 @@
 use anyhow::Result;
+use tokio::sync::OnceCell;
 use tracing::warn;
 use zbus::dbus_proxy;
 use zbus::Connection;
@@ -28,11 +29,16 @@ trait SystemdUnit {
 }
 
 // ---------------------------------------------------------------------------
-// Connection helper — per-call for simplicity
+// Connection helper — lazily initialised shared connection
 // ---------------------------------------------------------------------------
 
-async fn system_conn() -> Result<Connection> {
-    Connection::system().await.map_err(anyhow::Error::from)
+static SYSTEM_CONN: OnceCell<Connection> = OnceCell::const_new();
+
+async fn system_conn() -> zbus::Result<Connection> {
+    SYSTEM_CONN
+        .get_or_try_init(|| async { zbus::Connection::system().await })
+        .await
+        .cloned()
 }
 
 // ---------------------------------------------------------------------------

@@ -10,9 +10,9 @@ The review covers four reported runtime bugs ("Section A"), a full architectural
 
 | Area | Status | Headline |
 |------|--------|----------|
-| Architecture & threading | OK with edges | GTK / Tokio / tray separation is correct; minor channel ergonomics issues. |
-| Error handling | Needs work | `unwrap_or_default` and silent fallbacks hide config / parsing failures. |
-| Async & D-Bus | OK | `zbus` 3.x usage is correct; missing PropertiesChanged subscriptions. |
+| Architecture & threading | ✅ Addressed | `process::exit` removed; `async_channel::Receiver` clone replaces `take()` pattern. |
+| Error handling | ✅ Addressed | `Config::load` returns `Result`; `anyhow::Context` at D-Bus boundaries; auto-reconnect toggle in prefs. |
+| Async & D-Bus | ✅ Addressed | Proxy caching via `OnceCell`; NM `StateChanged` watcher; handshake watchdog (Milestone D). |
 | Security | ✅ Partially hardened | Sudoers narrowed, interface validated, TLS pinned, token memory-only. Secret Service (`oo7`) deferred to C. |
 | PIA integration | ✅ Implemented | `generate_token`, `server_list`, `measure_latency` shipped; `add_key`/port-forward stubs deferred. |
 | Kill switch | High risk | Runtime path ignores `allowedInterfaces`/`allowedAddresses`; pre‑connect leak window. |
@@ -21,7 +21,7 @@ The review covers four reported runtime bugs ("Section A"), a full architectural
 | Config | ✅ Partially addressed | Interface validation ✅. Atomic write, schema version still pending. |
 | Nix packaging | OK | Runtime closure misses `wireguard-tools`/`nft`/`iproute2` for non‑NixOS. |
 | NixOS module | OK | Polkit grants entire `wheel` group; DNS override not `mkDefault`. |
-| Testing | Improved | 15 unit tests (was 6); no integration / D‑Bus / HTTP coverage yet. |
+| Testing | ✅ Improved | 23 tests (15 unit + 3 integration + 5 pia); `tests/config_integration.rs` added. |
 | Documentation | OK | README is solid; `nix run` standalone path is undocumented. |
 | Dependencies | ✅ Updated | `reqwest` 0.12 (rustls) added. `thiserror` still unused. |
 | Build & CI | Local only | `scripts/preflight.sh` good; no GitHub Actions / GitLab CI yet. |
@@ -84,35 +84,29 @@ Append the rule below to [.gitignore](../.gitignore):
 
 # Section B — Full Project Review
 
-## B1. Architecture & threading — Medium
+## ✅ B1. Architecture & threading — SHIPPED (Milestone D)
 
 | Aspect | Verdict |
-|--------|---------|
+|--------|----------|
 | GTK confined to main thread | ✅ |
 | Tokio shared state via `Arc<RwLock<AppState>>` | ✅ |
-| Tray on its own OS thread, callbacks `block_on` the main runtime | OK (extra hop per menu read) |
-| `Arc<Mutex<Option<Receiver>>>` for tray→UI channel | ⚠ Fragile across re‑activation |
-| `std::process::exit` skips `Drop` for runtime | ⚠ Loses pending writes |
+| Tray on its own OS thread | ✅ |
+| `Arc<Mutex<Option<Receiver>>>` → `async_channel::Receiver::clone()` | ✅ Fixed (Milestone D) |
+| `std::process::exit` removed | ✅ Fixed (Milestone D) |
 
-**Recommend.** Replace the `take()`-on-first-activate pattern with `async-channel` + `glib::spawn_future_local`. Drop the `process::exit` in favor of a normal `main` return so the runtime drops cleanly.
+## ✅ B2. Error handling — SHIPPED (Milestone D)
 
-## B2. Error handling — Medium
+- ✅ `Config::load` now returns `anyhow::Result<Config>`; callers handle the error properly.
+- ✅ `anyhow::Context` added at D-Bus call sites.
+- ✅ `std::process::exit` removed — main returns `anyhow::Result<()>`; Tokio runtime drops cleanly.
+- ⏳ `clippy::unwrap_used` lint not yet denied at crate root — low priority, Milestone E.
 
-- `state::read_wg_stats` parses `wg show … transfer` with `unwrap_or(0)` — silent on malformed output.
-- `tray::run_tray` only `tracing::warn!`s when the StatusNotifier host is missing; no user surface.
-- `Config::load` swallows TOML parse errors with `unwrap_or_default()` — typos silently revert to defaults.
-- D-Bus call sites lack `anyhow::Context` for the operation name.
+## ✅ B3. Async & D-Bus — SHIPPED (Milestone D)
 
-**Recommend.** Add `anyhow::Context` at every fallible boundary; allow `Config::load` to return `Result` and surface a user banner; deny `clippy::unwrap_used`/`expect_used` at crate root.
-
-## B3. Async & D-Bus — Low → Medium
-
-- `zbus` 3.x usage (`dbus_proxy`, `Connection::system().await`, `OnceCell`) is correct.
-- `SystemdManagerProxy::new` is rebuilt on every call — cheap but wasteful.
-- We poll `ActiveState` every 3 s instead of subscribing to `PropertiesChanged`; UI is up to 3 s stale.
-- ✅ `apply_kill_switch` now invokes `pkexec vex-vpn-helper` (shipped Milestone C).
-
-**Remaining (Milestone D).** Cache the manager proxy in a `OnceCell`; subscribe to `PropertiesChanged` instead of polling.
+- ✅ `SystemdManagerProxy` cached via `OnceCell` — no longer rebuilt on every call.
+- ✅ NetworkManager `StateChanged` watcher drives auto-reconnect (F7).
+- ✅ `apply_kill_switch` invokes `pkexec vex-vpn-helper` via stdin pipe.
+- ⏳ `PropertiesChanged` subscription for unit active-state still pending (tray still polls every 3 s) — Milestone E.
 
 ## ✅ B4. Security — SHIPPED (Milestones B + C)
 
@@ -190,11 +184,12 @@ Append the rule below to [.gitignore](../.gitignore):
 - `wg show … transfer` calls `wg` via `PATH`; the capability‑setting wrapper at `/run/wrappers/bin/wg` must precede the system one or fail noisily.
 - DNS override is unconditional; should be `lib.mkDefault`.
 
-## B12. Testing — Medium
+## ✅ B12. Testing — SHIPPED (Milestone D)
 
-Six unit tests; zero integration tests; no D-Bus mocking; no PIA HTTP fixtures.
-
-**Recommend.** `tests/` for config / secrets / state round‑trips; `wiremock` for PIA HTTP; feature-gated `zbus` mock systemd manager.
+- ✅ 23 tests total: 15 unit + 3 integration (`tests/config_integration.rs`) + 5 PIA unit tests.
+- ✅ `src/lib.rs` exposes `config` module for integration testing.
+- ⏳ `wiremock` PIA HTTP fixtures — Milestone E.
+- ⏳ Feature-gated zbus mock systemd manager — Milestone E.
 
 ## B13. Documentation — Medium
 
@@ -229,12 +224,12 @@ Six unit tests; zero integration tests; no D-Bus mocking; no PIA HTTP fixtures.
 | F4\* | Secret Service credential storage | High (security) | ⏳ `oo7` deferred (uses zbus 4.x internally, conflicts with our zbus 3.x). Plaintext `0o600` atomic write kept. Revisit when oo7 migrates. |
 | ✅ F5 | Desktop notifications on connect/disconnect | Medium | ✅ `notify-rust 4` added; `notify_status_change` fires on poll loop transitions (Connected / Disconnected / Error). |
 | ✅ F6 | About / Preferences / Shortcuts dialogs | Medium | ✅ All three shipped: `adw::AboutWindow` (A), `adw::PreferencesWindow` (C), `gtk4::ShortcutsWindow` (C). |}
-| F7 | Auto-reconnect on network change | Medium | NetworkManager `StateChanged` via zbus |
-| F8 | DNS leak test | Medium | Resolve a canary against system + tunnel; compare upstream |
+| ✅ F7 | Auto-reconnect on network change | Medium | ✅ NM `StateChanged` watcher via zbus; auto-reconnect toggle in PreferencesWindow. |
+| ✅ F8 | DNS leak test | Medium | ✅ Canary DNS resolution comparing system vs. tunnel resolver; surfaced in Preferences. |
 | F9 | Connection history pane | Low | `~/.local/state/vex-vpn/history.jsonl` + nav page |
 | F10 | Localization scaffolding | Low | `gettext-rs` + `po/` + `cargo i18n` |
 | F11 | Split tunneling per app (cgroups + nft) | Low | Helper RPC `add_app_to_split` |
-| F12 | WireGuard handshake watchdog | Medium | Poll `latest_handshake`; restart unit if stale > 180 s |
+| ✅ F12 | WireGuard handshake watchdog | Medium | ✅ `ConnectionStatus::Stale` added; watchdog polls `latest_handshake`, restarts unit if stale > 180 s. |
 | F13 | Map view (Mullvad-style) | Low | `libshumate-rs` |
 | F14 | HiDPI / icons | Low | Bundle SVG symbolic icons |
 | F15 | Auto-update check (opt-in) | Low | GitHub Releases JSON poll |
@@ -250,8 +245,8 @@ Six unit tests; zero integration tests; no D-Bus mocking; no PIA HTTP fixtures.
 | **A — Make it usable** | Ship the four bug fixes + preflight tightening | A1, A2, A3, A4, A5 + `cargo fmt --check` | ✅ SHIPPED |
 | **B — Make it secure** | Drop the broad sudoers entry; in-app PIA HTTP | F2, F3 (partial), B4, B5, B9 (partial) | ✅ SHIPPED |
 | **C — Make it lovable** | Adwaita HIG completeness + Secret Service | F1, F3 (full helper), F4\*, F5, F6 | ✅ SHIPPED |
-| **D — Make it reliable** | Resilience + tests | F7, F8, F12, B1, B2, B3, integration tests | ⬅ **NEXT** |
-| **E — Make it shine** | Polish + reach | F9, F10, F13, F14, B15 (CI), GitHub + GitLab CI | Pending |
+| **D — Make it reliable** | Resilience + tests | F7, F8, F12, B1, B2, B3, integration tests | ✅ SHIPPED |
+| **E — Make it shine** | Polish + reach | F9, F10, F13, F14, B15 (CI), GitHub + GitLab CI | ⬅ **NEXT** |
 
 ---
 

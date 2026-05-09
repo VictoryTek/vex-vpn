@@ -18,7 +18,7 @@ use crate::state::AppState;
 /// The caller is responsible for calling `set_transient_for` and `present()`.
 pub fn build_preferences_window(
     parent: &adw::ApplicationWindow,
-    _state: Arc<RwLock<AppState>>,
+    state: Arc<RwLock<AppState>>,
 ) -> adw::PreferencesWindow {
     let win = adw::PreferencesWindow::builder()
         .transient_for(parent)
@@ -28,7 +28,7 @@ pub fn build_preferences_window(
 
     win.add(&build_connection_page());
     win.add(&build_privacy_page());
-    win.add(&build_advanced_page());
+    win.add(&build_advanced_page(state));
 
     win
 }
@@ -43,11 +43,12 @@ fn build_connection_page() -> adw::PreferencesPage {
         .icon_name("network-server-symbolic")
         .build();
 
-    let group = adw::PreferencesGroup::builder()
-        .title("Network")
-        .build();
+    let group = adw::PreferencesGroup::builder().title("Network").build();
 
-    let cfg = Config::load();
+    let cfg = Config::load().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config: {e:#}");
+        Config::default()
+    });
 
     // Interface name
     let iface_row = adw::EntryRow::builder()
@@ -59,7 +60,10 @@ fn build_connection_page() -> adw::PreferencesPage {
         iface_row.connect_apply(move |_| {
             let text = row.text().to_string();
             if crate::config::validate_interface(&text) {
-                let mut c = Config::load();
+                let mut c = Config::load().unwrap_or_else(|e| {
+                    tracing::warn!("Failed to load config: {e:#}");
+                    Config::default()
+                });
                 c.interface = text;
                 if let Err(e) = c.save() {
                     tracing::error!("save config (interface): {}", e);
@@ -78,7 +82,10 @@ fn build_connection_page() -> adw::PreferencesPage {
         let row = lat_row.clone();
         lat_row.connect_apply(move |_| {
             if let Ok(ms) = row.text().parse::<u32>() {
-                let mut c = Config::load();
+                let mut c = Config::load().unwrap_or_else(|e| {
+                    tracing::warn!("Failed to load config: {e:#}");
+                    Config::default()
+                });
                 c.max_latency_ms = ms;
                 if let Err(e) = c.save() {
                     tracing::error!("save config (max_latency_ms): {}", e);
@@ -109,7 +116,10 @@ fn build_connection_page() -> adw::PreferencesPage {
                 3 => "custom",
                 _ => "pia",
             };
-            let mut c = Config::load();
+            let mut c = Config::load().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config: {e:#}");
+                Config::default()
+            });
             c.dns_provider = provider.to_string();
             if let Err(e) = c.save() {
                 tracing::error!("save config (dns_provider): {}", e);
@@ -132,7 +142,10 @@ fn build_privacy_page() -> adw::PreferencesPage {
         .icon_name("security-symbolic")
         .build();
 
-    let cfg = Config::load();
+    let cfg = Config::load().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config: {e:#}");
+        Config::default()
+    });
 
     // Kill switch group
     let ks_group = adw::PreferencesGroup::builder()
@@ -147,7 +160,10 @@ fn build_privacy_page() -> adw::PreferencesPage {
     {
         ks_row.connect_active_notify(move |row| {
             let active = row.is_active();
-            let mut c = Config::load();
+            let mut c = Config::load().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config: {e:#}");
+                Config::default()
+            });
             c.kill_switch_enabled = active;
             if let Err(e) = c.save() {
                 tracing::error!("save config (kill_switch_enabled): {}", e);
@@ -172,7 +188,9 @@ fn build_privacy_page() -> adw::PreferencesPage {
     // Allowed interfaces group
     let ai_group = adw::PreferencesGroup::builder()
         .title("Allowed Interfaces")
-        .description("Comma-separated list of interfaces allowed through the kill switch (e.g. eth0,lo)")
+        .description(
+            "Comma-separated list of interfaces allowed through the kill switch (e.g. eth0,lo)",
+        )
         .build();
 
     let ai_row = adw::EntryRow::builder()
@@ -188,7 +206,10 @@ fn build_privacy_page() -> adw::PreferencesPage {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let mut c = Config::load();
+            let mut c = Config::load().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config: {e:#}");
+                Config::default()
+            });
             c.kill_switch_allowed_ifaces = ifaces;
             if let Err(e) = c.save() {
                 tracing::error!("save config (kill_switch_allowed_ifaces): {}", e);
@@ -205,13 +226,16 @@ fn build_privacy_page() -> adw::PreferencesPage {
 // Page 3 — Advanced
 // ---------------------------------------------------------------------------
 
-fn build_advanced_page() -> adw::PreferencesPage {
+fn build_advanced_page(state: Arc<RwLock<AppState>>) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder()
         .title("Advanced")
         .icon_name("preferences-system-symbolic")
         .build();
 
-    let cfg = Config::load();
+    let cfg = Config::load().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config: {e:#}");
+        Config::default()
+    });
 
     let group = adw::PreferencesGroup::new();
 
@@ -223,7 +247,10 @@ fn build_advanced_page() -> adw::PreferencesPage {
         .build();
     {
         ac_row.connect_active_notify(move |row| {
-            let mut c = Config::load();
+            let mut c = Config::load().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config: {e:#}");
+                Config::default()
+            });
             c.auto_connect = row.is_active();
             if let Err(e) = c.save() {
                 tracing::error!("save config (auto_connect): {}", e);
@@ -231,6 +258,33 @@ fn build_advanced_page() -> adw::PreferencesPage {
         });
     }
     group.add(&ac_row);
+
+    // Auto-reconnect
+    let ar_row = adw::SwitchRow::builder()
+        .title("Auto-reconnect")
+        .subtitle("Reconnect automatically when network connectivity is restored")
+        .active(cfg.auto_reconnect)
+        .build();
+    {
+        let state = state.clone();
+        ar_row.connect_active_notify(move |row| {
+            let active = row.is_active();
+            let mut c = Config::load().unwrap_or_else(|e| {
+                tracing::warn!("Failed to load config: {e:#}");
+                Config::default()
+            });
+            c.auto_reconnect = active;
+            if let Err(e) = c.save() {
+                tracing::error!("save config (auto_reconnect): {}", e);
+            }
+            // Propagate immediately to AppState so the NM watcher respects the new value.
+            let state = state.clone();
+            glib::spawn_future_local(async move {
+                state.write().await.auto_reconnect = active;
+            });
+        });
+    }
+    group.add(&ar_row);
 
     // Log verbosity
     let log_model = gtk4::StringList::new(&["info", "debug", "trace"]);

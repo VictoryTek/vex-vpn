@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 
 pub enum TrayMessage {
     ShowWindow,
-    #[allow(dead_code)]
     Quit,
 }
 
@@ -22,7 +21,7 @@ pub enum TrayMessage {
 struct PiaTray {
     state: Arc<RwLock<AppState>>,
     handle: tokio::runtime::Handle,
-    tx: std::sync::mpsc::SyncSender<TrayMessage>,
+    tx: async_channel::Sender<TrayMessage>,
 }
 
 impl PiaTray {
@@ -45,6 +44,7 @@ impl Tray for PiaTray {
                 .as_ref()
                 .map(|r| format!("PIA — {}", r.name))
                 .unwrap_or_else(|| "PIA — Connected".to_string()),
+            ConnectionStatus::Stale(_) => "PIA — Reconnecting…".to_string(),
             other => format!("PIA — {}", other.label()),
         }
     }
@@ -54,6 +54,7 @@ impl Tray for PiaTray {
         match s.status {
             ConnectionStatus::Connected => "network-vpn-symbolic",
             ConnectionStatus::Connecting => "network-vpn-acquiring-symbolic",
+            ConnectionStatus::Stale(_) => "network-vpn-acquiring-symbolic",
             ConnectionStatus::KillSwitchActive => "network-vpn-no-route-symbolic",
             _ => "network-vpn-disabled-symbolic",
         }
@@ -69,7 +70,7 @@ impl Tray for PiaTray {
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
                 label: "Open PIA".to_string(),
                 activate: Box::new(|tray: &mut PiaTray| {
-                    let _ = tray.tx.send(TrayMessage::ShowWindow);
+                    let _ = tray.tx.try_send(TrayMessage::ShowWindow);
                 }),
                 ..Default::default()
             }),
@@ -100,8 +101,8 @@ impl Tray for PiaTray {
             ksni::MenuItem::Separator,
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
                 label: "Quit".to_string(),
-                activate: Box::new(|_| {
-                    std::process::exit(0);
+                activate: Box::new(|tray: &mut PiaTray| {
+                    let _ = tray.tx.try_send(TrayMessage::Quit);
                 }),
                 ..Default::default()
             }),
@@ -111,7 +112,7 @@ impl Tray for PiaTray {
 
 pub fn run_tray(
     state: Arc<RwLock<AppState>>,
-    tx: std::sync::mpsc::SyncSender<TrayMessage>,
+    tx: async_channel::Sender<TrayMessage>,
     handle: tokio::runtime::Handle,
 ) {
     let tray = PiaTray { state, handle, tx };

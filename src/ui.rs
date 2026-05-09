@@ -5,7 +5,6 @@ use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
 // ---------------------------------------------------------------------------
@@ -137,6 +136,7 @@ struct LiveWidgets {
     kill_switch_updating: std::rc::Rc<std::cell::Cell<bool>>,
     port_forward_updating: std::rc::Rc<std::cell::Cell<bool>>,
     server_row: adw::ActionRow,
+    dns_banner: adw::Banner,
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ struct LiveWidgets {
 pub fn build_ui(
     app: &adw::Application,
     state: Arc<RwLock<AppState>>,
-    rx: Option<std::sync::mpsc::Receiver<TrayMessage>>,
+    rx: Option<async_channel::Receiver<TrayMessage>>,
 ) -> adw::ApplicationWindow {
     let provider = gtk4::CssProvider::new();
     provider.load_from_data(APP_CSS);
@@ -170,7 +170,9 @@ pub fn build_ui(
 
     let initial_auto_connect = {
         // Read synchronously — at startup before the async runtime is loaded.
-        crate::config::Config::load().auto_connect
+        crate::config::Config::load()
+            .unwrap_or_default()
+            .auto_connect
     };
 
     let (main_page, live) = build_main_page(state.clone(), initial_auto_connect);
@@ -221,14 +223,14 @@ pub fn build_ui(
     // Drain the tray→window channel and raise the window on ShowWindow.
     if let Some(rx) = rx {
         let window_ref = window.clone();
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            while let Ok(msg) = rx.try_recv() {
+        let app_ref = app.clone();
+        glib::spawn_future_local(async move {
+            while let Ok(msg) = rx.recv().await {
                 match msg {
                     TrayMessage::ShowWindow => window_ref.present(),
-                    TrayMessage::Quit => std::process::exit(0),
+                    TrayMessage::Quit => app_ref.quit(),
                 }
             }
-            glib::ControlFlow::Continue
         });
     }
 
@@ -251,6 +253,7 @@ pub fn build_ui(
             kill_switch_updating: live.kill_switch_updating.clone(),
             port_forward_updating: live.port_forward_updating.clone(),
             server_row: live.server_row.clone(),
+            dns_banner: live.dns_banner.clone(),
         };
         glib::spawn_future_local(async move {
             let s = state.read().await.clone();
@@ -262,7 +265,6 @@ pub fn build_ui(
     window.present();
     window
 }
-
 // ---------------------------------------------------------------------------
 // Primary menu (gio::Menu) and About window
 // ---------------------------------------------------------------------------
@@ -497,6 +499,11 @@ fn build_main_page(
     hero.append(&ip_label);
     page.append(&hero);
 
+    // DNS leak warning banner — hidden until a potential leak is detected.
+    let dns_banner = adw::Banner::new("Possible DNS leak detected");
+    dns_banner.set_revealed(false);
+    page.append(&dns_banner);
+
     // ── Server picker placeholder ─────────────────────────────────────────
     // Full server list UI is deferred. This row is wired to AppState so once
     // a region is known (today: written by the backend after auto-select) the
@@ -619,7 +626,10 @@ fn build_main_page(
             "Connect on graphical login",
             initial_auto_connect,
             move |active| {
-                let mut cfg = crate::config::Config::load();
+                let mut cfg = crate::config::Config::load().unwrap_or_else(|e| {
+                    tracing::warn!("Failed to load config: {e:#}");
+                    crate::config::Config::default()
+                });
                 cfg.auto_connect = active;
                 if let Err(e) = cfg.save() {
                     tracing::error!("Failed to save config: {}", e);
@@ -647,6 +657,7 @@ fn build_main_page(
         kill_switch_updating,
         port_forward_updating,
         server_row,
+        dns_banner,
     };
 
     (page, live)
@@ -729,7 +740,10 @@ fn build_server_list_page(
                     state.write().await.selected_region_id = Some(region_id.clone());
 
                     // Persist to config
-                    let mut cfg = crate::config::Config::load();
+                    let mut cfg = crate::config::Config::load().unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load config: {e:#}");
+                        crate::config::Config::default()
+                    });
                     cfg.selected_region_id = Some(region_id);
                     if let Err(e) = cfg.save() {
                         tracing::error!("Failed to save config: {}", e);
@@ -854,6 +868,12 @@ fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
             "CONNECT",
             "network-vpn-disabled-symbolic",
         ),
+        ConnectionStatus::Stale(_) => (
+            "● RECONNECTING...",
+            "state-connecting",
+            "DISCONNECT",
+            "network-vpn-acquiring-symbolic",
+        ),
     };
 
     live.status_pill.set_label(pill_text);
@@ -921,6 +941,13 @@ fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
     live.port_forward_updating.set(true);
     live.port_forward_sw.set_active(s.port_forward_enabled);
     live.port_forward_updating.set(false);
+
+    // DNS leak banner
+    live.dns_banner.set_revealed(s.dns_leak_hint.is_some());
+    if let Some(ref ips) = s.dns_leak_hint {
+        live.dns_banner
+            .set_title(&format!("Possible DNS leak: {}", ips.join(", ")));
+    }
 }
 
 fn make_stat_card(label: &str, default: &str, green: bool) -> (gtk4::Box, gtk4::Label) {

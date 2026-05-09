@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 /// Validate that `name` is a legal Linux network interface name and
@@ -33,10 +33,17 @@ pub struct Config {
     pub kill_switch_enabled: bool,
     #[serde(default = "default_kill_switch_allowed_ifaces")]
     pub kill_switch_allowed_ifaces: Vec<String>,
+    /// Automatically restart the VPN tunnel when network connectivity is restored.
+    #[serde(default = "default_true")]
+    pub auto_reconnect: bool,
 }
 
 fn default_kill_switch_allowed_ifaces() -> Vec<String> {
     vec!["lo".to_string()]
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -49,6 +56,7 @@ impl Default for Config {
             selected_region_id: None,
             kill_switch_enabled: false,
             kill_switch_allowed_ifaces: vec!["lo".to_string()],
+            auto_reconnect: true,
         }
     }
 }
@@ -64,13 +72,25 @@ fn config_path() -> PathBuf {
 }
 
 impl Config {
-    pub fn load() -> Self {
-        let path = config_path();
-        let content = match std::fs::read_to_string(&path) {
+    /// Load config from the canonical path (`~/.config/vex-vpn/config.toml`).
+    /// Returns `Err` if the file exists but cannot be parsed.
+    /// Returns `Ok(Config::default())` if the file does not exist.
+    pub fn load() -> Result<Self> {
+        Self::load_from(&config_path())
+    }
+
+    /// Load config from an explicit path — used by integration tests for isolation.
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => return Self::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => {
+                return Err(anyhow::Error::from(e))
+                    .with_context(|| format!("read {}", path.display()))
+            }
         };
-        let mut cfg: Config = toml::from_str(&content).unwrap_or_default();
+        let mut cfg: Config =
+            toml::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
 
         // Validate the interface name to prevent nft injection.
         if !validate_interface(&cfg.interface) {
@@ -81,7 +101,7 @@ impl Config {
             cfg.interface = "wg0".to_string();
         }
 
-        cfg
+        Ok(cfg)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -121,6 +141,7 @@ mod tests {
             selected_region_id: Some("us_california".to_string()),
             kill_switch_enabled: false,
             kill_switch_allowed_ifaces: vec![],
+            auto_reconnect: true,
         };
         let serialized = toml::to_string_pretty(&original).unwrap();
         let loaded: Config = toml::from_str(&serialized).unwrap();

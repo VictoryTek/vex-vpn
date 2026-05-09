@@ -227,7 +227,10 @@ pub fn show_onboarding(
                 3 => {
                     // Kill Switch → Done: save kill switch choice
                     let ks_active = ks_switch_c.is_active();
-                    let mut cfg = crate::config::Config::load();
+                    let mut cfg = crate::config::Config::load().unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load config: {e:#}");
+                        crate::config::Config::default()
+                    });
                     cfg.kill_switch_enabled = ks_active;
                     if let Err(e) = cfg.save() {
                         tracing::error!("save config (kill switch): {}", e);

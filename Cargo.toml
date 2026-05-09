@@ -9,6 +9,10 @@ license = "MIT"
 name = "vex-vpn"
 path = "src/main.rs"
 
+[lib]
+name = "vex_vpn"
+path = "src/lib.rs"
+
 [[bin]]
 name = "vex-vpn-helper"
 path = "src/bin/helper.rs"
@@ -56,6 +60,18 @@ notify-rust = "4"
 
 # Required for vex-vpn-helper binary (root-uid verification)
 libc = "0.2"
+
+# Async MPMC channel for tray→UI messages (B1)
+async-channel = "2"
+
+# Stream utilities needed for zbus signal iteration (B3, F7)
+futures-util = "0.3"
+
+[dev-dependencies]
+# HTTP mocking for PIA API integration tests
+wiremock = "0.6"
+# Temporary directory creation for isolation in integration tests
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

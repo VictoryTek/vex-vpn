@@ -51,8 +51,7 @@ async fn call_helper(req: &HelperRequest<'_>) -> Result<HelperResponse> {
         .stdin
         .take()
         .ok_or_else(|| anyhow::anyhow!("helper stdin unavailable"))?;
-    let line = serde_json::to_string(req).map_err(|e| anyhow::anyhow!("serialize: {}", e))?
-        + "\n";
+    let line = serde_json::to_string(req).map_err(|e| anyhow::anyhow!("serialize: {}", e))? + "\n";
     stdin
         .write_all(line.as_bytes())
         .await
@@ -86,7 +85,10 @@ pub async fn apply_kill_switch(interface: &str) -> Result<()> {
     if !crate::config::validate_interface(interface) {
         bail!("invalid interface name: {:?}", interface);
     }
-    let config = crate::config::Config::load();
+    let config = crate::config::Config::load().unwrap_or_else(|e| {
+        tracing::warn!("Failed to load config: {e:#}");
+        crate::config::Config::default()
+    });
     let resp = call_helper(&HelperRequest {
         op: "enable_kill_switch",
         interface: Some(interface),

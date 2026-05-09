@@ -32,7 +32,10 @@ fn main() -> Result<()> {
     info!("Starting vex-vpn");
 
     // Load persisted user config (falls back to defaults on any error).
-    let cfg = config::Config::load();
+    let cfg = config::Config::load().unwrap_or_else(|e| {
+        warn!("Failed to load config: {e:#}");
+        config::Config::default()
+    });
 
     // Build the Tokio runtime and keep it alive for the duration of main.
     let rt = tokio::runtime::Runtime::new()?;
@@ -45,8 +48,20 @@ fn main() -> Result<()> {
         state::poll_loop(state_for_poll).await;
     });
 
+    // Spawn VPN unit state watcher — triggers an immediate poll on ActiveState changes.
+    let state_for_vpn_watch = app_state.clone();
+    rt.spawn(async move {
+        state::watch_vpn_unit_state(state_for_vpn_watch).await;
+    });
+
+    // Spawn NetworkManager state watcher — auto-reconnects when network is restored.
+    let state_for_nm_watch = app_state.clone();
+    rt.spawn(async move {
+        state::watch_network_manager(state_for_nm_watch).await;
+    });
+
     // Channel for tray→main-window messages.
-    let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<TrayMessage>(8);
+    let (tray_tx, tray_rx) = async_channel::bounded::<TrayMessage>(8);
 
     // Spawn system tray on its own thread with its own single-threaded runtime.
     let state_for_tray = app_state.clone();
@@ -66,12 +81,11 @@ fn main() -> Result<()> {
     // Register application-level actions for the headerbar menu.
     register_app_actions(&app, app_state.clone());
 
-    // Wrap the receiver so it can be moved into the Send closure below.
-    let tray_rx = Arc::new(std::sync::Mutex::new(Some(tray_rx)));
-
     let state_for_ui = app_state.clone();
     app.connect_activate(move |app| {
-        let rx = tray_rx.lock().unwrap().take();
+        // async_channel::Receiver is Clone — each activation gets a fresh clone
+        // so re-activation (GNOME session restore) always receives the channel.
+        let rx = tray_rx.clone();
 
         // Build the PIA client once and share it.
         let pia_client = match pia::PiaClient::new() {
@@ -85,7 +99,7 @@ fn main() -> Result<()> {
         match secrets::load_sync_hint() {
             Ok(Some(creds)) => {
                 // Credentials exist — show main window immediately, auto-login in background.
-                build_and_show_main_window(app, state_for_ui.clone(), rx);
+                build_and_show_main_window(app, state_for_ui.clone(), Some(rx));
                 let state = state_for_ui.clone();
                 let client = pia_client;
                 glib::spawn_future_local(async move {
@@ -96,30 +110,25 @@ fn main() -> Result<()> {
                 // First run — show onboarding wizard; main window built on completion.
                 let app_clone = app.clone();
                 let state_clone = state_for_ui.clone();
-                let rx_shared = Arc::new(std::sync::Mutex::new(rx));
-                ui_onboarding::show_onboarding(
-                    app,
-                    state_for_ui.clone(),
-                    pia_client,
-                    move || {
-                        let rx_inner = rx_shared.lock().unwrap().take();
-                        build_and_show_main_window(&app_clone, state_clone.clone(), rx_inner);
-                    },
-                );
+                ui_onboarding::show_onboarding(app, state_for_ui.clone(), pia_client, move || {
+                    build_and_show_main_window(&app_clone, state_clone.clone(), Some(rx.clone()));
+                });
             }
             Err(e) => warn!("load credentials: {}", e),
         }
     });
 
-    let exit_code = app.run();
-    std::process::exit(exit_code.into());
+    let _exit_code = app.run();
+    // Drop _guard before rt so the Tokio context exits cleanly.
+    drop(_guard);
+    Ok(())
 }
 
 /// Build the main window and make it visible.
 fn build_and_show_main_window(
     app: &adw::Application,
     state: Arc<RwLock<AppState>>,
-    rx: Option<std::sync::mpsc::Receiver<TrayMessage>>,
+    rx: Option<async_channel::Receiver<TrayMessage>>,
 ) {
     ui::build_ui(app, state, rx);
 }

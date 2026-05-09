@@ -27,13 +27,27 @@ trait SystemdUnit {
     fn active_state(&self) -> zbus::Result<String>;
 }
 
+/// NetworkManager global connectivity state constants.
+pub const NM_CONNECTED_GLOBAL: u32 = 70;
+
+#[dbus_proxy(
+    interface = "org.freedesktop.NetworkManager",
+    default_service = "org.freedesktop.NetworkManager",
+    default_path = "/org/freedesktop/NetworkManager"
+)]
+trait NetworkManager {
+    /// Emitted when overall connectivity state changes.
+    #[dbus_proxy(signal)]
+    fn state_changed(&self, state: u32) -> zbus::Result<()>;
+}
+
 // ---------------------------------------------------------------------------
 // Connection helper — lazily initialised shared connection
 // ---------------------------------------------------------------------------
 
 static SYSTEM_CONN: OnceCell<Connection> = OnceCell::const_new();
 
-async fn system_conn() -> zbus::Result<Connection> {
+pub(crate) async fn system_conn() -> zbus::Result<Connection> {
     SYSTEM_CONN
         .get_or_try_init(|| async { zbus::Connection::system().await })
         .await
@@ -81,6 +95,13 @@ pub async fn enable_port_forward() -> Result<()> {
 
 pub async fn disable_port_forward() -> Result<()> {
     stop_unit("pia-vpn-portforward.service").await
+}
+
+/// Stop then start pia-vpn.service — used by auto-reconnect and watchdog.
+pub async fn restart_vpn_unit() -> Result<()> {
+    stop_unit("pia-vpn.service").await?;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    start_unit("pia-vpn.service").await
 }
 
 async fn start_unit(name: &str) -> Result<()> {

@@ -4,9 +4,9 @@
 { config, lib, pkgs, self, ... }:
 
 let
-  cfg = config.services.pia-gui;
+  cfg = config.services.vex-vpn;
   # vpnCfg is only referenced inside mkIf cfg.enable blocks so it is safe even if
-  # services.pia-vpn is not in scope (standalone pia-gui usage gets caught by the
+  # services.pia-vpn is not in scope (standalone vex-vpn usage gets caught by the
   # assertion below).
   vpnCfg = config.services.pia-vpn;
 in
@@ -14,13 +14,13 @@ in
 with lib;
 
 {
-  options.services.pia-gui = {
+  options.services.vex-vpn = {
     enable = mkEnableOption "vex-vpn GUI — GTK4/Rust frontend for the pia-vpn WireGuard service";
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.system}.pia-gui;
-      description = "The pia-gui package to use.";
+      default = self.packages.${pkgs.system}.vex-vpn;
+      description = "The vex-vpn package to use.";
     };
 
     autostart = mkOption {
@@ -80,7 +80,7 @@ with lib;
       {
         assertion = config.services.pia-vpn.enable or false;
         message = ''
-          services.pia-gui requires services.pia-vpn to be enabled.
+          services.vex-vpn requires services.pia-vpn to be enabled.
           Use nixosModules.default (which includes both) or add nixosModules.pia-vpn
           to your imports and set services.pia-vpn.enable = true.
         '';
@@ -131,13 +131,13 @@ with lib;
     };
 
     # Autostart GUI for the graphical session via systemd user service.
-    systemd.user.services.pia-gui = mkIf cfg.autostart {
+    systemd.user.services.vex-vpn = mkIf cfg.autostart {
       description = "vex-vpn GUI";
       after = [ "graphical-session.target" ];
       wantedBy = [ "graphical-session.target" ];
       serviceConfig = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/pia-gui";
+        ExecStart = "${cfg.package}/bin/vex-vpn";
         Restart = "on-failure";
         RestartSec = 3;
         Environment = [ "GSK_RENDERER=cairo" ];

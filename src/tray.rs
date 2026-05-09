@@ -33,7 +33,7 @@ impl PiaTray {
 
 impl Tray for PiaTray {
     fn id(&self) -> String {
-        "pia-gui".to_string()
+        "vex-vpn".to_string()
     }
 
     fn title(&self) -> String {

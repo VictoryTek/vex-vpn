@@ -6,7 +6,7 @@ description = "VPN GUI for NixOS — WireGuard/PIA backend via systemd"
 license = "MIT"
 
 [[bin]]
-name = "pia-gui"
+name = "vex-vpn"
 path = "src/main.rs"
 
 [dependencies]

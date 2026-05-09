@@ -86,9 +86,9 @@ Repository Notes:
   - `src/ui.rs` — GTK4/libadwaita UI with embedded CSS; built and driven from the GTK main thread  
   - `flake.nix` — Nix Flake declaring the dev shell, Crane-based package build, and NixOS module  
   - `module.nix` — NixOS module for system-level service and desktop integration  
-  - `Cargo.toml` — Rust package manifest; binary name is `pia-gui`  
+  - `Cargo.toml` — Rust package manifest; binary name is `vex-vpn`  
 - Architecture Pattern: **Multi-threaded event-driven — GTK4 main thread (UI), Tokio `Runtime` for async state polling and D-Bus calls, separate OS thread with its own Tokio runtime for the ksni tray; threads communicate via `Arc<RwLock<AppState>>` and a `std::sync::mpsc::SyncSender<TrayMessage>`**  
-- Special Constraints: **All builds and tool invocations MUST run inside `nix develop` (or via `nix build`) to satisfy GTK4 pkg-config paths and `GI_TYPELIB_PATH`; GTK4 must execute exclusively on the main thread; zbus is pinned to 3.x for Rust 1.75 compatibility; the compiled binary is named `pia-gui` even though the Cargo package is `vex-vpn`; D-Bus system bus must be available at runtime for systemd service control**  
+- Special Constraints: **All builds and tool invocations MUST run inside `nix develop` (or via `nix build`) to satisfy GTK4 pkg-config paths and `GI_TYPELIB_PATH`; GTK4 must execute exclusively on the main thread; zbus is pinned to 3.x for Rust 1.75 compatibility; the compiled binary is named `vex-vpn` matching the Cargo package name; D-Bus system bus must be available at runtime for systemd service control**  
 
 ---
 
@@ -479,7 +479,7 @@ Additional vex-vpn-specific checks:
 - Confirm any new `zbus` usage targets the 3.x API (`dbus_proxy` macro, `Connection::system().await`) and does not introduce 4.x patterns.
 - Confirm `Arc<RwLock<AppState>>` is used for shared state — do not introduce `Mutex` as a replacement without justification.
 - Confirm config persistence still targets `~/.config/vex-vpn/config.toml` via the `config_path()` helper.
-- Confirm the binary name remains `pia-gui` in `Cargo.toml` `[[bin]]` section.
+- Confirm the binary name remains `vex-vpn` in `Cargo.toml` `[[bin]]` section.
 
 If any build step fails:
 - Categorize as CRITICAL

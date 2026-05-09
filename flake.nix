@@ -21,7 +21,7 @@
       # with DNS and iproute2 fixes). Can be used standalone without the GUI.
       vpnModule = ./nix/module-vpn.nix;
 
-      # pia-gui frontend: the GTK4/Rust GUI. Requires pia-vpn to be enabled.
+      # vex-vpn frontend: the GTK4/Rust GUI. Requires pia-vpn to be enabled.
       guiModule = { config, lib, pkgs, ... }:
         import ./nix/module-gui.nix { inherit config lib pkgs self; };
 
@@ -79,9 +79,9 @@
           '';
         });
 
-        pia-gui = craneLib.buildPackage (commonArgs // {
+        vex-vpn = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
-          pname = "pia-gui";
+          pname = "vex-vpn";
 
           preBuild = ''
             export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
@@ -90,12 +90,12 @@
           postInstall = ''
             # Desktop entry
             mkdir -p $out/share/applications
-            cat > $out/share/applications/pia-gui.desktop << EOF
+            cat > $out/share/applications/vex-vpn.desktop << EOF
             [Desktop Entry]
             Type=Application
             Name=Private Internet Access
             Comment=PIA VPN client for NixOS
-            Exec=pia-gui
+            Exec=vex-vpn
             Icon=network-vpn
             Categories=Network;VPN;
             StartupNotify=true
@@ -103,14 +103,14 @@
 
             # Systemd user service (auto-start the GUI on login)
             mkdir -p $out/lib/systemd/user
-            cat > $out/lib/systemd/user/pia-gui.service << EOF
+            cat > $out/lib/systemd/user/vex-vpn.service << EOF
             [Unit]
             Description=PIA VPN GUI
             After=graphical-session.target
 
             [Service]
             Type=simple
-            ExecStart=%h/.nix-profile/bin/pia-gui
+            ExecStart=%h/.nix-profile/bin/vex-vpn
             Restart=on-failure
             RestartSec=3
 
@@ -122,12 +122,12 @@
 
       in {
         packages = {
-          inherit pia-gui;
-          default = pia-gui;
+          inherit vex-vpn;
+          default = vex-vpn;
         };
 
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ pia-gui ];
+          inputsFrom = [ vex-vpn ];
           packages = with pkgs; [
             rustToolchain
             rust-analyzer
@@ -142,7 +142,7 @@
         };
 
         checks = {
-          inherit pia-gui;
+          inherit vex-vpn;
           clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
@@ -154,11 +154,11 @@
       # ── NixOS modules (system-independent) ──────────────────────────────────
       # Most users: import nixosModules.default — gets both vpn backend + gui.
       # Advanced:   import nixosModules.pia-vpn alone (headless/server use).
-      #             import nixosModules.pia-gui alone (if you manage pia-vpn separately).
+      #             import nixosModules.vex-vpn alone (if you manage pia-vpn separately).
       nixosModules = {
         default  = combinedModule;
         pia-vpn  = vpnModule;
-        pia-gui  = guiModule;
+        vex-vpn  = guiModule;
       };
     };
 }

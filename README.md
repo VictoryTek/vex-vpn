@@ -1,4 +1,4 @@
-# pia-gui
+# vex-vpn
 
 A native Rust/GTK4 GUI for Private Internet Access VPN on NixOS, built on top of the WireGuard-based systemd backend from [tadfisher/flake](https://github.com/tadfisher/flake/blob/main/nixos/modules/pia-vpn.nix).
 
@@ -40,18 +40,18 @@ A native Rust/GTK4 GUI for Private Internet Access VPN on NixOS, built on top of
     tadfisher-flake.inputs.nixpkgs.follows = "nixpkgs";
 
     # This GUI
-    pia-gui.url = "github:yourname/pia-gui";  # or path:./pia-gui
-    pia-gui.inputs.nixpkgs.follows = "nixpkgs";
+    vex-vpn.url = "github:yourname/vex-vpn";  # or path:./vex-vpn
+    vex-vpn.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { nixpkgs, tadfisher-flake, pia-gui, self }: {
+  outputs = { nixpkgs, tadfisher-flake, vex-vpn, self }: {
     nixosConfigurations.mymachine = nixpkgs.lib.nixosSystem {
       system = "x86_64-linux";
       modules = [
         # Backend service
         "${tadfisher-flake}/nixos/modules/pia-vpn.nix"
         # GUI + NixOS module
-        pia-gui.nixosModules.default
+        vex-vpn.nixosModules.default
         ./configuration.nix
       ];
     };
@@ -83,7 +83,7 @@ A native Rust/GTK4 GUI for Private Internet Access VPN on NixOS, built on top of
   };
 
   # ── GUI ───────────────────────────────────────────
-  services.pia-gui = {
+  services.vex-vpn = {
     enable = true;
     autostart = true;   # launch on graphical login
 
@@ -128,8 +128,8 @@ sudo chmod 600 /run/secrets/pia
 ## Development
 
 ```bash
-git clone https://github.com/yourname/pia-gui
-cd pia-gui
+git clone https://github.com/yourname/vex-vpn
+cd vex-vpn
 nix develop          # drops into shell with Rust + GTK4 + all deps
 cargo watch -x run   # live reload
 ```
@@ -150,7 +150,7 @@ The GUI toggle calls `nft` at runtime. The NixOS module option (`killSwitch.enab
 
 ```
 ┌─────────────────────────────────────────┐
-│              pia-gui (Rust)             │
+│              vex-vpn (Rust)             │
 │                                         │
 │  ┌──────────┐  ┌──────────┐            │
 │  │  GTK4 UI │  │  Tray    │            │

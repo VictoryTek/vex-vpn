@@ -7,4 +7,4 @@
 # The flake exports:
 #   nixosModules.default  — combined (recommended for most users)
 #   nixosModules.pia-vpn  — backend only
-#   nixosModules.pia-gui  — frontend only
+#   nixosModules.vex-vpn  — frontend only

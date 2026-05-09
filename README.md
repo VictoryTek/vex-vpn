@@ -32,13 +32,13 @@ A native Rust/GTK4 GUI for Private Internet Access VPN on NixOS, built on top of
 Run directly without installing:
 
 ```bash
-nix run github:yourname/vex-vpn
+nix run github:victorytek/vex-vpn
 ```
 
 Install to your Nix profile:
 
 ```bash
-nix profile add github:yourname/vex-vpn
+nix profile add github:victorytek/vex-vpn
 ```
 
 > **Note:** The quick-start options launch the GUI only. For kill switch, port forwarding, and autostart you need the full NixOS module setup below.

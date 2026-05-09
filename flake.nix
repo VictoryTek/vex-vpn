@@ -67,7 +67,15 @@
         ];
 
         commonArgs = {
-          src = craneLib.cleanCargoSource (craneLib.path ./.);
+          src = let
+            certFilter = path: type:
+              type == "directory" || builtins.match ".*\\.crt$" path != null;
+            srcFilter = path: type:
+              (certFilter path type) || (craneLib.filterCargoSources path type);
+          in pkgs.lib.cleanSourceWith {
+            src = craneLib.path ./.;
+            filter = srcFilter;
+          };
           inherit nativeBuildInputs buildInputs;
           PKG_CONFIG_PATH = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" buildInputs;
         };
@@ -88,6 +96,10 @@
           '';
 
           postInstall = ''
+            # PIA CA certificate for NixOS module
+            mkdir -p $out/share/pia
+            cp assets/ca.rsa.4096.crt $out/share/pia/
+
             # Desktop entry
             mkdir -p $out/share/applications
             cat > $out/share/applications/vex-vpn.desktop << EOF

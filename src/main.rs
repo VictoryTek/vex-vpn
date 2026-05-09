@@ -1,5 +1,6 @@
 mod config;
 mod dbus;
+mod pia;
 mod secrets;
 mod state;
 mod tray;
@@ -60,7 +61,7 @@ fn main() -> Result<()> {
         .build();
 
     // Register application-level actions for the headerbar menu.
-    register_app_actions(&app);
+    register_app_actions(&app, app_state.clone());
 
     // Wrap the receiver so it can be moved into the Send closure below.
     let tray_rx = Arc::new(std::sync::Mutex::new(Some(tray_rx)));
@@ -70,16 +71,30 @@ fn main() -> Result<()> {
         let rx = tray_rx.lock().unwrap().take();
         let window = ui::build_ui(app, state_for_ui.clone(), rx);
 
-        // First-run login: if no credentials are stored, prompt for them
-        // *after* the main window is shown so the user sees both at once.
+        // Build the PIA client once and share it.
+        let pia_client = match pia::PiaClient::new() {
+            Ok(c) => Arc::new(c),
+            Err(e) => {
+                warn!("Failed to create PIA client: {}", e);
+                return;
+            }
+        };
+
+        // First-run login: if no credentials are stored, prompt for them.
+        // If credentials exist, auto-login in the background.
         match secrets::load() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                ui_login::show_login_dialog(&window, |creds| {
-                    if let Err(e) = secrets::save(&creds) {
-                        tracing::error!("save credentials: {}", e);
-                    }
+            Ok(Some(creds)) => {
+                // Auto-login with existing credentials
+                let state = state_for_ui.clone();
+                let client = pia_client.clone();
+                glib::spawn_future_local(async move {
+                    auto_login(client, state, &creds.username, &creds.password).await;
                 });
+            }
+            Ok(None) => {
+                let state = state_for_ui.clone();
+                let client = pia_client.clone();
+                ui_login::show_login_dialog(&window, state, client);
             }
             Err(e) => warn!("load credentials: {}", e),
         }
@@ -89,9 +104,38 @@ fn main() -> Result<()> {
     std::process::exit(exit_code.into());
 }
 
+/// Background auto-login: generate token and fetch server list.
+async fn auto_login(
+    client: Arc<pia::PiaClient>,
+    state: Arc<RwLock<AppState>>,
+    username: &str,
+    password: &str,
+) {
+    match client.generate_token(username, password).await {
+        Ok(token) => {
+            info!("PIA token obtained");
+            state.write().await.auth_token = Some(token);
+        }
+        Err(e) => {
+            warn!("Auto-login failed: {}", e);
+            return;
+        }
+    }
+
+    match client.fetch_server_list().await {
+        Ok(server_list) => {
+            info!("Loaded {} PIA regions", server_list.regions.len());
+            state.write().await.regions = server_list.regions;
+        }
+        Err(e) => {
+            warn!("Failed to fetch server list: {}", e);
+        }
+    }
+}
+
 /// Register `app.about`, `app.quit`, and `app.switch-account` actions used by
 /// the headerbar primary menu.
-fn register_app_actions(app: &adw::Application) {
+fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
     // Quit
     let quit_action = gio::SimpleAction::new("quit", None);
     {
@@ -124,11 +168,14 @@ fn register_app_actions(app: &adw::Application) {
                 .active_window()
                 .and_then(|w| w.downcast::<adw::ApplicationWindow>().ok())
             {
-                ui_login::show_login_dialog(&window, |creds| {
-                    if let Err(e) = secrets::save(&creds) {
-                        tracing::error!("save credentials: {}", e);
+                match pia::PiaClient::new() {
+                    Ok(client) => {
+                        ui_login::show_login_dialog(&window, state.clone(), Arc::new(client));
                     }
-                });
+                    Err(e) => {
+                        tracing::error!("Failed to create PIA client: {}", e);
+                    }
+                }
             }
         });
     }

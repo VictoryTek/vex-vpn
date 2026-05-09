@@ -160,13 +160,18 @@ with lib;
       });
     '';
 
-    # Allow users in 'wheel' to run nft for kill-switch management without a password.
+    # Allow users in 'wheel' to run specific nft commands for kill-switch management.
+    # Narrowed from full nft access to only the two commands the GUI actually uses.
     security.sudo.extraRules = [
       {
         groups = [ "wheel" ];
         commands = [
           {
-            command = "${pkgs.nftables}/bin/nft";
+            command = "${pkgs.nftables}/bin/nft -f -";
+            options = [ "NOPASSWD" ];
+          }
+          {
+            command = "${pkgs.nftables}/bin/nft delete table inet pia_kill_switch";
             options = [ "NOPASSWD" ];
           }
         ];

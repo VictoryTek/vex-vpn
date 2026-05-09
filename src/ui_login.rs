@@ -1,26 +1,30 @@
-//! Sign-in dialog for entering PIA credentials on first run / "Switch account".
+//! Sign-in dialog for entering PIA credentials.
 //!
-//! Phase-1 MVP: only validates that fields are non-empty. Server-side
-//! verification via the PIA API is deferred to a later milestone.
+//! Validates credentials against the PIA token API before saving.
+//! Shows a spinner during validation and error messages on failure.
 
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
+use crate::pia;
 use crate::secrets::Credentials;
+use crate::state::AppState;
 
-/// Show the modal sign-in dialog. Calls `on_success(creds)` exactly once
-/// when the user confirms with non-empty fields. The dialog closes itself
-/// on Sign in / Cancel.
-pub fn show_login_dialog<F>(parent: &adw::ApplicationWindow, on_success: F)
-where
-    F: Fn(Credentials) + 'static,
-{
+/// Show the modal sign-in dialog. Validates credentials against PIA before
+/// saving. On success, stores auth token and fetches the server list.
+pub fn show_login_dialog(
+    parent: &adw::ApplicationWindow,
+    state: Arc<RwLock<AppState>>,
+    pia_client: Arc<pia::PiaClient>,
+) {
     let dialog = adw::Window::builder()
         .transient_for(parent)
         .modal(true)
         .default_width(400)
-        .default_height(280)
+        .default_height(320)
         .resizable(false)
         .title("Sign in to PIA")
         .build();
@@ -54,6 +58,14 @@ where
     group.add(&password_row);
     content.append(&group);
 
+    // Error label — hidden by default, shown on auth failure.
+    let error_label = gtk4::Label::new(None);
+    error_label.set_wrap(true);
+    error_label.set_xalign(0.0);
+    error_label.add_css_class("error");
+    error_label.set_visible(false);
+    content.append(&error_label);
+
     let button_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     button_row.set_halign(gtk4::Align::End);
     button_row.set_margin_top(4);
@@ -62,6 +74,11 @@ where
     let signin_btn = gtk4::Button::with_label("Sign in");
     signin_btn.add_css_class("suggested-action");
 
+    // Spinner shown during validation
+    let spinner = gtk4::Spinner::new();
+    spinner.set_visible(false);
+
+    button_row.append(&spinner);
     button_row.append(&cancel_btn);
     button_row.append(&signin_btn);
     content.append(&button_row);
@@ -78,15 +95,76 @@ where
         let dialog_c = dialog.clone();
         let username_row_c = username_row.clone();
         let password_row_c = password_row.clone();
+        let error_label_c = error_label.clone();
+        let spinner_c = spinner.clone();
+        let signin_btn_c = signin_btn.clone();
+
         signin_btn.connect_clicked(move |_| {
             let username = username_row_c.text().to_string();
             let password = password_row_c.text().to_string();
             if username.trim().is_empty() || password.is_empty() {
-                tracing::warn!("login: empty username or password");
+                error_label_c.set_label("Username and password are required.");
+                error_label_c.set_visible(true);
                 return;
             }
-            on_success(Credentials { username, password });
-            dialog_c.close();
+
+            // Show spinner, disable button
+            spinner_c.set_visible(true);
+            spinner_c.set_spinning(true);
+            signin_btn_c.set_sensitive(false);
+            error_label_c.set_visible(false);
+
+            let client = pia_client.clone();
+            let state = state.clone();
+            let dialog = dialog_c.clone();
+            let error_label = error_label_c.clone();
+            let spinner = spinner_c.clone();
+            let signin_btn = signin_btn_c.clone();
+
+            glib::spawn_future_local(async move {
+                match client.generate_token(&username, &password).await {
+                    Ok(token) => {
+                        // Save credentials locally
+                        let creds = Credentials {
+                            username: username.clone(),
+                            password: password.clone(),
+                        };
+                        if let Err(e) = crate::secrets::save(&creds) {
+                            tracing::error!("save credentials: {}", e);
+                        }
+
+                        // Store token in state
+                        state.write().await.auth_token = Some(token);
+
+                        // Fetch server list in the background
+                        match client.fetch_server_list().await {
+                            Ok(server_list) => {
+                                tracing::info!("Loaded {} PIA regions", server_list.regions.len());
+                                state.write().await.regions = server_list.regions;
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to fetch server list: {}", e);
+                            }
+                        }
+
+                        dialog.close();
+                    }
+                    Err(pia::PiaError::AuthFailed) => {
+                        error_label.set_label("Invalid username or password.");
+                        error_label.set_visible(true);
+                        spinner.set_spinning(false);
+                        spinner.set_visible(false);
+                        signin_btn.set_sensitive(true);
+                    }
+                    Err(e) => {
+                        error_label.set_label(&format!("Connection error: {}", e));
+                        error_label.set_visible(true);
+                        spinner.set_spinning(false);
+                        spinner.set_visible(false);
+                        signin_btn.set_sensitive(true);
+                    }
+                }
+            });
         });
     }
 

@@ -114,6 +114,10 @@ async fn stop_unit(name: &str) -> Result<()> {
 
 /// Insert the pia_kill_switch nftables table that drops all non-VPN traffic.
 pub async fn apply_kill_switch(interface: &str) -> Result<()> {
+    if !crate::config::validate_interface(interface) {
+        anyhow::bail!("invalid interface name: {:?}", interface);
+    }
+
     let ruleset = format!(
         r#"table inet pia_kill_switch {{
     chain output {{

@@ -1,3 +1,4 @@
+use crate::pia;
 use crate::state::{format_bytes, AppState, ConnectionStatus};
 use crate::tray::TrayMessage;
 use adw::prelude::*;
@@ -173,7 +174,29 @@ pub fn build_ui(
     };
 
     let (main_page, live) = build_main_page(state.clone(), initial_auto_connect);
-    root.append(&main_page);
+
+    // Wrap the dashboard and server list in a NavigationView.
+    let nav_view = adw::NavigationView::new();
+    let dashboard_page = adw::NavigationPage::builder()
+        .title("Dashboard")
+        .child(&main_page)
+        .build();
+    nav_view.push(&dashboard_page);
+
+    // Make the server row activatable — clicking it pushes the server list page.
+    {
+        let nav_view_c = nav_view.clone();
+        let state_c = state.clone();
+        let server_row_c = live.server_row.clone();
+        live.server_row.set_activatable(true);
+        live.server_row.connect_activated(move |_| {
+            let server_page = build_server_list_page(state_c.clone(), &nav_view_c, &server_row_c);
+            nav_view_c.push(&server_page);
+        });
+    }
+
+    nav_view.set_hexpand(true);
+    root.append(&nav_view);
 
     // Wrap content in an AdwToolbarView with an AdwHeaderBar so the window
     // has a draggable area and somewhere to host the primary menu.
@@ -609,6 +632,158 @@ fn build_main_page(
 }
 
 // ---------------------------------------------------------------------------
+// Server list page
+// ---------------------------------------------------------------------------
+
+fn build_server_list_page(
+    state: Arc<RwLock<AppState>>,
+    nav_view: &adw::NavigationView,
+    dashboard_server_row: &adw::ActionRow,
+) -> adw::NavigationPage {
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+
+    // Search entry at the top
+    let search_entry = gtk4::SearchEntry::new();
+    search_entry.set_placeholder_text(Some("Search servers…"));
+    content.append(&search_entry);
+
+    let scrolled = gtk4::ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_min_content_height(300);
+
+    let list_box = gtk4::ListBox::new();
+    list_box.set_selection_mode(gtk4::SelectionMode::None);
+    list_box.add_css_class("boxed-list");
+    list_box.add_css_class("feature-list");
+    scrolled.set_child(Some(&list_box));
+    content.append(&scrolled);
+
+    // Populate from current state — snapshot the regions.
+    let nav_view_c = nav_view.clone();
+    let dashboard_row_c = dashboard_server_row.clone();
+    let state_c = state.clone();
+    let list_box_c = list_box.clone();
+
+    glib::spawn_future_local(async move {
+        let regions = {
+            let s = state_c.read().await;
+            s.regions.clone()
+        };
+
+        for region in &regions {
+            let row = build_server_row(region);
+            list_box_c.append(&row);
+
+            // Measure latency asynchronously
+            if let Some(meta) = region.servers.meta.first() {
+                let ip = meta.ip.clone();
+                let row_ref = row.clone();
+                glib::spawn_future_local(async move {
+                    if let Some(lat) = pia::PiaClient::measure_latency(&ip).await {
+                        row_ref.set_subtitle(&format!("{} ms", lat.as_millis()));
+                    }
+                });
+            }
+
+            // On click: select this region
+            let region_id = region.id.clone();
+            let region_name = region.name.clone();
+            let state_c2 = state_c.clone();
+            let nav_view_c2 = nav_view_c.clone();
+            let dashboard_row_c2 = dashboard_row_c.clone();
+
+            row.connect_activated(move |_| {
+                let region_id = region_id.clone();
+                let region_name = region_name.clone();
+                let state = state_c2.clone();
+                let nav_view = nav_view_c2.clone();
+                let dashboard_row = dashboard_row_c2.clone();
+
+                glib::spawn_future_local(async move {
+                    // Update state
+                    state.write().await.selected_region_id = Some(region_id.clone());
+
+                    // Persist to config
+                    let mut cfg = crate::config::Config::load();
+                    cfg.selected_region_id = Some(region_id);
+                    if let Err(e) = cfg.save() {
+                        tracing::error!("Failed to save config: {}", e);
+                    }
+
+                    // Update dashboard
+                    dashboard_row.set_subtitle(&region_name);
+
+                    // Pop back to dashboard
+                    nav_view.pop();
+                });
+            });
+        }
+
+        if regions.is_empty() {
+            let empty_label = gtk4::Label::new(Some("Sign in to load servers"));
+            empty_label.add_css_class("dim-label");
+            empty_label.set_margin_top(24);
+            list_box_c.append(&empty_label);
+        }
+    });
+
+    // Search filtering
+    let list_box_filter = list_box.clone();
+    search_entry.connect_search_changed(move |entry| {
+        let query = entry.text().to_string().to_lowercase();
+        let mut child = list_box_filter.first_child();
+        while let Some(widget) = child {
+            if let Some(row) = widget.downcast_ref::<adw::ActionRow>() {
+                let title = row.title().to_string().to_lowercase();
+                row.set_visible(query.is_empty() || title.contains(&query));
+            }
+            child = widget.next_sibling();
+        }
+    });
+
+    adw::NavigationPage::builder()
+        .title("Servers")
+        .child(&content)
+        .build()
+}
+
+/// Build a single server row for the server list page.
+fn build_server_row(region: &pia::Region) -> adw::ActionRow {
+    let row = adw::ActionRow::new();
+    row.set_title(&region.name);
+    row.set_activatable(true);
+    row.set_subtitle("—");
+
+    let icon = gtk4::Image::from_icon_name("network-server-symbolic");
+    icon.set_pixel_size(16);
+    row.add_prefix(&icon);
+
+    // Port-forward badge
+    if region.port_forward {
+        let badge = gtk4::Label::new(Some("PF"));
+        badge.add_css_class("port-badge");
+        row.add_suffix(&badge);
+    }
+
+    // Geo badge
+    if region.geo {
+        let geo = gtk4::Label::new(Some("geo"));
+        geo.add_css_class("dim-label");
+        row.add_suffix(&geo);
+    }
+
+    let chevron = gtk4::Image::from_icon_name("go-next-symbolic");
+    chevron.add_css_class("dim-label");
+    row.add_suffix(&chevron);
+
+    row
+}
+
+// ---------------------------------------------------------------------------
 // Widget helpers
 // ---------------------------------------------------------------------------
 
@@ -670,13 +845,29 @@ fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
     if let Some(region) = &s.region {
         live.location_label.set_label(&region.name);
         live.server_row.set_subtitle(&region.name);
+    } else if let Some(ref selected_id) = s.selected_region_id {
+        // Show the selected region name from the server list
+        if let Some(r) = s.regions.iter().find(|r| &r.id == selected_id) {
+            live.location_label.set_label(&r.name);
+            live.server_row.set_subtitle(&r.name);
+        } else {
+            live.location_label.set_label(selected_id);
+            live.server_row.set_subtitle(selected_id);
+        }
+    } else if !s.regions.is_empty() {
+        live.location_label.set_label("Select a server");
+        live.server_row.set_subtitle("Tap to choose a server");
     } else {
         live.location_label.set_label(if s.status.is_connected() {
             "Connected"
         } else {
             "Select a server"
         });
-        live.server_row.set_subtitle("Sign in to load servers");
+        live.server_row.set_subtitle(if s.auth_token.is_some() {
+            "Tap to choose a server"
+        } else {
+            "Sign in to load servers"
+        });
     }
 
     if let Some(conn) = &s.connection {

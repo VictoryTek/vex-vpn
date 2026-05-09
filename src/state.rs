@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 use crate::config::Config;
+use crate::pia;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -71,6 +72,12 @@ pub struct AppState {
     pub auto_connect: bool,
     pub interface: String,
     pub latency_ms: Option<u32>,
+    /// PIA authentication token (memory-only, never persisted).
+    pub auth_token: Option<pia::AuthToken>,
+    /// Full PIA server list from the v6 API.
+    pub regions: Vec<pia::Region>,
+    /// User-selected region ID (persisted via Config).
+    pub selected_region_id: Option<String>,
 }
 
 impl Default for AppState {
@@ -91,6 +98,9 @@ impl AppState {
             auto_connect: false,
             interface: "wg0".to_string(),
             latency_ms: None,
+            auth_token: None,
+            regions: Vec::new(),
+            selected_region_id: None,
         }
     }
 
@@ -98,6 +108,7 @@ impl AppState {
         Self {
             auto_connect: config.auto_connect,
             interface: config.interface.clone(),
+            selected_region_id: config.selected_region_id.clone(),
             ..Self::new()
         }
     }

@@ -162,8 +162,28 @@ async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
         s.interface.clone()
     };
 
-    // Query systemd via D-Bus for the service active state.
-    let new_status = match crate::dbus::get_service_status("pia-vpn.service").await {
+    let state_dir = "/var/lib/pia-vpn"; // systemd StateDirectory (no DynamicUser)
+
+    // Run all 7 independent I/O operations concurrently.
+    let (
+        vpn_status_raw,
+        region_raw,
+        wg_info_raw,
+        forwarded_port_raw,
+        wg_stats_raw,
+        kill_switch_raw,
+        pf_status_raw,
+    ) = tokio::join!(
+        crate::dbus::get_service_status("pia-vpn.service"),
+        read_region(state_dir),
+        read_wireguard(state_dir),
+        read_port_forward(state_dir),
+        read_wg_stats(&interface),
+        check_kill_switch(),
+        crate::dbus::get_service_status("pia-vpn-portforward.service"),
+    );
+
+    let new_status = match vpn_status_raw {
         Ok(s) if s == "active" => ConnectionStatus::Connected,
         Ok(s) if s == "activating" => ConnectionStatus::Connecting,
         Ok(s) if s == "failed" => ConnectionStatus::Error("Service failed".to_string()),
@@ -174,17 +194,12 @@ async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
         }
     };
 
-    let state_dir = "/var/lib/pia-vpn"; // systemd StateDirectory (no DynamicUser)
-    let region = read_region(state_dir).await.ok();
-    let wg_info = read_wireguard(state_dir).await.ok();
-    let forwarded_port = read_port_forward(state_dir).await.unwrap_or(None);
-    let (rx_bytes, tx_bytes) = read_wg_stats(&interface).await.unwrap_or((0, 0));
-    let kill_switch_active = check_kill_switch().await.unwrap_or(false);
-
-    let pf_active = crate::dbus::get_service_status("pia-vpn-portforward.service")
-        .await
-        .map(|s| s == "active")
-        .unwrap_or(false);
+    let region = region_raw.ok();
+    let wg_info = wg_info_raw.ok();
+    let forwarded_port = forwarded_port_raw.unwrap_or(None);
+    let (rx_bytes, tx_bytes) = wg_stats_raw.unwrap_or((0, 0));
+    let kill_switch_active = kill_switch_raw.unwrap_or(false);
+    let pf_active = pf_status_raw.map(|s| s == "active").unwrap_or(false);
 
     // Measure latency to the PIA meta server when connected.
     let latency_ms = if new_status.is_connected() {
@@ -311,7 +326,7 @@ async fn measure_latency(ip: &str) -> Option<u32> {
     let addr = format!("{}:443", ip);
     let start = std::time::Instant::now();
     let result = tokio::time::timeout(
-        Duration::from_millis(5000),
+        Duration::from_millis(2000),
         tokio::net::TcpStream::connect(addr.as_str()),
     )
     .await;

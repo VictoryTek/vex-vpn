@@ -151,7 +151,7 @@ The latency TCP probe uses a 5-second timeout, but the poll loop sleeps for 3 se
 
 **Fix:** Reduce latency timeout to ≤2 seconds, or run the probe concurrently with other poll operations via `tokio::join!`.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -210,7 +210,7 @@ pub struct App;
 | 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [x] |
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [x] |
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [x] |
-| 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [ ] |
+| 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [x] |
 | 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [ ] |
 | 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [ ] |
 | 10 | Low | `src/app.rs` | `App` struct is an unused stub | [ ] |

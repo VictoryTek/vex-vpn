@@ -177,7 +177,7 @@ The sidebar builds three nav buttons (Dashboard, Servers, Settings), but only Da
 
 **Fix:** Either implement the pages or hide the buttons until they are ready.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -212,5 +212,5 @@ pub struct App;
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [x] |
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [x] |
 | 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [x] |
-| 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [ ] |
+| 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [x] |
 | 10 | Low | `src/app.rs` | `App` struct is an unused stub | [ ] |

@@ -242,8 +242,6 @@ fn build_sidebar() -> gtk4::Box {
     // Nav items: (icon-name, label, active)
     let nav_items = [
         ("go-home-symbolic", "Dashboard", true),
-        ("network-server-symbolic", "Servers", false),
-        ("preferences-system-symbolic", "Settings", false),
     ];
 
     for (icon, label, active) in &nav_items {

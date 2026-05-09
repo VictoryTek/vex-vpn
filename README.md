@@ -196,6 +196,27 @@ The GUI toggle calls `nft` at runtime. The NixOS module option (`killSwitch.enab
 └─────────────────────────────────────────┘
 ```
 
+## Updating / Forcing a Fresh Build
+
+If you ran `nix run github:victorytek/vex-vpn` and want to pull the latest build, use `--refresh` to bypass the cached flake lock:
+
+```bash
+nix run github:victorytek/vex-vpn --refresh
+```
+
+To also discard the previously built store path and force a full rebuild:
+
+```bash
+nix run github:victorytek/vex-vpn --refresh --no-cache
+```
+
+Or garbage-collect old store paths first:
+
+```bash
+nix store gc
+nix run github:victorytek/vex-vpn --refresh
+```
+
 ## License
 
 MIT

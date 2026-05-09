@@ -351,10 +351,16 @@ fn build_main_page(
 
                         if let Err(e) = crate::dbus::disconnect_vpn().await {
                             tracing::error!("disconnect: {}", e);
+                            pill.set_label("● ERROR");
+                            set_state_class(&pill, "state-error");
                         }
                     }
                     ConnectionStatus::Connecting => {
-                        let _ = crate::dbus::disconnect_vpn().await;
+                        if let Err(e) = crate::dbus::disconnect_vpn().await {
+                            tracing::error!("cancel: {}", e);
+                            pill.set_label("● ERROR");
+                            set_state_class(&pill, "state-error");
+                        }
                     }
                     _ => {
                         pill.set_label("● CONNECTING...");
@@ -365,6 +371,8 @@ fn build_main_page(
 
                         if let Err(e) = crate::dbus::connect_vpn().await {
                             tracing::error!("connect: {}", e);
+                            pill.set_label("● ERROR");
+                            set_state_class(&pill, "state-error");
                         }
                     }
                 }

@@ -165,7 +165,7 @@ When `connect_vpn()` or `disconnect_vpn()` fails, the error is only logged via `
 
 **Fix:** Show an `adw::Toast` or set the status pill to "ERROR" immediately on failure.
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -211,6 +211,6 @@ pub struct App;
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [x] |
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [x] |
 | 7 | Medium | `src/state.rs` | 5s latency timeout > 3s poll interval; causes UI lag | [x] |
-| 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [ ] |
+| 8 | Low | `src/ui.rs` | No user feedback on connect/disconnect failure | [x] |
 | 9 | Low | `src/ui.rs` | Servers/Settings nav buttons have no handlers | [ ] |
 | 10 | Low | `src/app.rs` | `App` struct is an unused stub | [ ] |

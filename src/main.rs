@@ -44,8 +44,9 @@ fn main() -> Result<()> {
 
     // Spawn system tray on its own thread with its own single-threaded runtime.
     let state_for_tray = app_state.clone();
+    let tray_handle = rt.handle().clone();
     std::thread::spawn(move || {
-        tray::run_tray(state_for_tray, tray_tx);
+        tray::run_tray(state_for_tray, tray_tx, tray_handle);
     });
 
     // The _guard keeps the Tokio context alive so that glib::spawn_future_local

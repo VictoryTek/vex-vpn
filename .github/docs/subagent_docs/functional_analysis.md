@@ -60,7 +60,7 @@ pub struct PiaTray {
 tray.rt.spawn(async { ... });  // now schedules on the main multi-threaded runtime
 ```
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -205,7 +205,7 @@ pub struct App;
 | # | Severity | File | Issue | Fixed |
 |---|----------|------|-------|-------|
 | 1 | Critical | `src/state.rs` | Wrong state dir path (`/var/lib/private/` vs `/var/lib/`) | [x] |
-| 2 | Critical | `src/tray.rs` | Tray uses dead single-threaded runtime; D-Bus calls stranded | [ ] |
+| 2 | Critical | `src/tray.rs` | Tray uses dead single-threaded runtime; D-Bus calls stranded | [x] |
 | 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [ ] |
 | 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [ ] |
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [ ] |

@@ -14,20 +14,20 @@ pub enum TrayMessage {
 }
 
 // ---------------------------------------------------------------------------
-// The tray runs on its own OS thread with its own Tokio runtime so it never
-// blocks the GTK main thread and never panics from Handle::current() being
-// unavailable.
+// The tray runs on its own OS thread. It holds a Handle to the main Tokio
+// runtime so that spawned D-Bus tasks are driven by the main runtime's worker
+// threads rather than a stranded single-threaded runtime.
 // ---------------------------------------------------------------------------
 
 struct PiaTray {
     state: Arc<RwLock<AppState>>,
-    rt: tokio::runtime::Runtime,
+    handle: tokio::runtime::Handle,
     tx: std::sync::mpsc::SyncSender<TrayMessage>,
 }
 
 impl PiaTray {
     fn read_state(&self) -> AppState {
-        self.rt.block_on(async { self.state.read().await.clone() })
+        self.handle.block_on(async { self.state.read().await.clone() })
     }
 }
 
@@ -81,13 +81,13 @@ impl Tray for PiaTray {
                 },
                 activate: Box::new(move |tray: &mut PiaTray| {
                     if is_connected || is_connecting {
-                        tray.rt.spawn(async {
+                        tray.handle.spawn(async {
                             if let Err(e) = crate::dbus::disconnect_vpn().await {
                                 tracing::error!("disconnect failed: {}", e);
                             }
                         });
                     } else {
-                        tray.rt.spawn(async {
+                        tray.handle.spawn(async {
                             if let Err(e) = crate::dbus::connect_vpn().await {
                                 tracing::error!("connect failed: {}", e);
                             }
@@ -108,19 +108,12 @@ impl Tray for PiaTray {
     }
 }
 
-pub fn run_tray(state: Arc<RwLock<AppState>>, tx: std::sync::mpsc::SyncSender<TrayMessage>) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            tracing::error!("Failed to create tray runtime: {}", e);
-            return;
-        }
-    };
-
-    let tray = PiaTray { state, rt, tx };
+pub fn run_tray(
+    state: Arc<RwLock<AppState>>,
+    tx: std::sync::mpsc::SyncSender<TrayMessage>,
+    handle: tokio::runtime::Handle,
+) {
+    let tray = PiaTray { state, handle, tx };
 
     if let Err(e) = ksni::TrayService::new(tray).run() {
         tracing::warn!(

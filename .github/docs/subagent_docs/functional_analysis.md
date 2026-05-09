@@ -90,7 +90,7 @@ let mut child = tokio::process::Command::new("sudo")
     ...
 ```
 
-- [ ] Fixed
+- [x] Fixed
 
 ---
 
@@ -206,7 +206,7 @@ pub struct App;
 |---|----------|------|-------|-------|
 | 1 | Critical | `src/state.rs` | Wrong state dir path (`/var/lib/private/` vs `/var/lib/`) | [x] |
 | 2 | Critical | `src/tray.rs` | Tray uses dead single-threaded runtime; D-Bus calls stranded | [x] |
-| 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [ ] |
+| 3 | Critical | `src/dbus.rs` | `nft` called without `sudo`; kill switch always fails | [x] |
 | 4 | High | `src/ui.rs` | Kill switch / port forward switches not synced from state | [ ] |
 | 5 | Medium | `src/dbus.rs` | `GetUnit` fails for unloaded units; should use `LoadUnit` | [ ] |
 | 6 | Medium | `src/dbus.rs` | New D-Bus connection per poll (40+/min); should be shared | [ ] |

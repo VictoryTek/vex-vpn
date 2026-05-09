@@ -126,7 +126,8 @@ pub async fn apply_kill_switch(interface: &str) -> Result<()> {
         iface = interface
     );
 
-    let mut child = tokio::process::Command::new("nft")
+    let mut child = tokio::process::Command::new("sudo")
+        .arg("nft")
         .arg("-f")
         .arg("-")
         .stdin(std::process::Stdio::piped())
@@ -157,8 +158,8 @@ pub async fn apply_kill_switch(interface: &str) -> Result<()> {
 
 /// Remove the pia_kill_switch nftables table.
 pub async fn remove_kill_switch() -> Result<()> {
-    let output = tokio::process::Command::new("nft")
-        .args(["delete", "table", "inet", "pia_kill_switch"])
+    let output = tokio::process::Command::new("sudo")
+        .args(["nft", "delete", "table", "inet", "pia_kill_switch"])
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("failed to spawn nft: {}", e))?;

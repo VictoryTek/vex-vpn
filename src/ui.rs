@@ -589,11 +589,30 @@ fn build_main_page(
                         lbl.set_label("CANCEL");
                         icon.set_icon_name(Some("network-vpn-acquiring-symbolic"));
 
-                        if let Err(e) = crate::dbus::connect_vpn().await {
-                            tracing::error!("connect: {}", e);
-                            pill.set_label("● ERROR");
-                            set_state_class(&pill, "state-error");
-                            toast.add_toast(adw::Toast::new(&format!("Connect failed: {e:#}")));
+                        match crate::dbus::connect_vpn().await {
+                            Ok(()) => { /* unit started successfully */ }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                pill.set_label("● DISCONNECTED");
+                                set_state_class(&pill, "state-disconnected");
+                                set_state_class(&btn, "state-disconnected");
+                                lbl.set_label("CONNECT");
+                                icon.set_icon_name(Some("network-vpn-disabled-symbolic"));
+
+                                if msg.contains("NoSuchUnit") || msg.contains("No such unit") {
+                                    let dialog = adw::MessageDialog::new(
+                                        None::<&adw::ApplicationWindow>,
+                                        Some("VPN service not installed"),
+                                        Some("The pia-vpn.service systemd unit was not found.\n\nEnable the vex-vpn NixOS module in your system configuration:\n\n  services.vex-vpn.enable = true;\n\nThen run: sudo nixos-rebuild switch"),
+                                    );
+                                    dialog.add_response("ok", "OK");
+                                    dialog.set_default_response(Some("ok"));
+                                    dialog.present();
+                                } else {
+                                    tracing::error!("connect: {}", e);
+                                    toast.add_toast(adw::Toast::new(&format!("Connect failed: {e:#}")));
+                                }
+                            }
                         }
                     }
                 }

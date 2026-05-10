@@ -70,6 +70,7 @@ pub struct WgKeyResponse {
     pub server_key: String,
     pub server_port: u16,
     pub server_ip: String,
+    #[allow(dead_code)]
     pub server_vip: String,
     pub peer_ip: String,
     pub dns_servers: Vec<String>,
@@ -255,12 +256,12 @@ impl PiaClient {
     #[allow(dead_code)]
     pub async fn add_key(
         &self,
-        _wg_ip: &str,
         _wg_hostname: &str,
+        _wg_ip: &str,
         _token: &str,
         _pubkey: &str,
     ) -> Result<WgKeyResponse, PiaError> {
-        Err(PiaError::Other("add_key not yet implemented".to_string()))
+        Err(PiaError::Other("add_key not yet implemented".into()))
     }
 
     /// Get a port-forward signature from the connected server's gateway.

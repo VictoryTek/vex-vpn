@@ -176,7 +176,20 @@ pub fn build_ui(
             .auto_connect
     };
 
-    let (main_page, live) = build_main_page(state.clone(), initial_auto_connect);
+    let initial_kill_switch = crate::config::Config::load()
+        .unwrap_or_default()
+        .kill_switch_enabled;
+
+    // Toast overlay wraps all content so any async error can surface a brief
+    // non-blocking notification to the user.
+    let toast_overlay = adw::ToastOverlay::new();
+
+    let (main_page, live) = build_main_page(
+        state.clone(),
+        initial_auto_connect,
+        initial_kill_switch,
+        toast_overlay.clone(),
+    );
 
     // Wrap the dashboard and server list in a NavigationView.
     let nav_view = adw::NavigationView::new();
@@ -225,7 +238,8 @@ pub fn build_ui(
 
     let toolbar_view = adw::ToolbarView::new();
     toolbar_view.add_top_bar(&header);
-    toolbar_view.set_content(Some(&root));
+    toast_overlay.set_child(Some(&root));
+    toolbar_view.set_content(Some(&toast_overlay));
 
     window.set_content(Some(&toolbar_view));
 
@@ -486,6 +500,8 @@ fn build_history_page() -> adw::NavigationPage {
 fn build_main_page(
     state: Arc<RwLock<AppState>>,
     initial_auto_connect: bool,
+    initial_kill_switch: bool,
+    toasts: adw::ToastOverlay,
 ) -> (gtk4::Box, LiveWidgets) {
     let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     page.set_margin_top(28);
@@ -531,6 +547,7 @@ fn build_main_page(
         let btn_c = connect_btn.clone();
         let lbl_c = btn_label.clone();
         let icon_c = btn_icon.clone();
+        let toast_c = toasts.clone();
 
         connect_btn.connect_clicked(move |_| {
             let state = state_c.clone();
@@ -538,6 +555,7 @@ fn build_main_page(
             let btn = btn_c.clone();
             let lbl = lbl_c.clone();
             let icon = icon_c.clone();
+            let toast = toast_c.clone();
 
             glib::spawn_future_local(async move {
                 let current = state.read().await.status.clone();
@@ -553,6 +571,7 @@ fn build_main_page(
                             tracing::error!("disconnect: {}", e);
                             pill.set_label("● ERROR");
                             set_state_class(&pill, "state-error");
+                            toast.add_toast(adw::Toast::new(&format!("Disconnect failed: {e:#}")));
                         }
                     }
                     ConnectionStatus::Connecting => {
@@ -560,6 +579,7 @@ fn build_main_page(
                             tracing::error!("cancel: {}", e);
                             pill.set_label("● ERROR");
                             set_state_class(&pill, "state-error");
+                            toast.add_toast(adw::Toast::new(&format!("Cancel failed: {e:#}")));
                         }
                     }
                     _ => {
@@ -573,6 +593,7 @@ fn build_main_page(
                             tracing::error!("connect: {}", e);
                             pill.set_label("● ERROR");
                             set_state_class(&pill, "state-error");
+                            toast.add_toast(adw::Toast::new(&format!("Connect failed: {e:#}")));
                         }
                     }
                 }
@@ -657,16 +678,18 @@ fn build_main_page(
     let kill_switch_sw = {
         let state_c = state.clone();
         let guard = kill_switch_updating.clone();
+        let toasts_ks = toasts.clone();
         let (row, sw) = make_toggle_row(
             "network-vpn-symbolic",
             "Kill Switch",
             "Block all traffic if VPN drops",
-            false,
+            initial_kill_switch,
             move |active| {
                 if guard.get() {
                     return;
                 }
                 let state = state_c.clone();
+                let toasts = toasts_ks.clone();
                 glib::spawn_future_local(async move {
                     let iface = state.read().await.interface.clone();
                     let res = if active {
@@ -674,8 +697,14 @@ fn build_main_page(
                     } else {
                         crate::helper::remove_kill_switch().await
                     };
-                    if let Err(e) = res {
-                        tracing::error!("kill switch toggle: {}", e);
+                    match res {
+                        Ok(()) => {
+                            state.write().await.kill_switch_enabled = active;
+                        }
+                        Err(e) => {
+                            tracing::error!("kill switch toggle: {}", e);
+                            toasts.add_toast(adw::Toast::new(&format!("Kill switch error: {e:#}")));
+                        }
                     }
                 });
             },
@@ -688,6 +717,7 @@ fn build_main_page(
     let port_forward_updating = std::rc::Rc::new(std::cell::Cell::new(false));
     let port_forward_sw = {
         let guard = port_forward_updating.clone();
+        let toasts_pf = toasts.clone();
         let (row, sw) = make_toggle_row(
             "network-transmit-receive-symbolic",
             "Port Forwarding",
@@ -697,6 +727,7 @@ fn build_main_page(
                 if guard.get() {
                     return;
                 }
+                let toasts = toasts_pf.clone();
                 glib::spawn_future_local(async move {
                     let res = if active {
                         crate::dbus::enable_port_forward().await
@@ -705,6 +736,7 @@ fn build_main_page(
                     };
                     if let Err(e) = res {
                         tracing::error!("port forward toggle: {}", e);
+                        toasts.add_toast(adw::Toast::new(&format!("Port forwarding error: {e:#}")));
                     }
                 });
             },

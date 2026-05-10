@@ -236,14 +236,18 @@ pub fn show_onboarding(
                         tracing::error!("save config (kill switch): {}", e);
                     }
 
-                    if ks_active {
-                        let iface = cfg.interface.clone();
-                        glib::spawn_future_local(async move {
+                    // Mirror the new value to shared AppState so the main window
+                    // opens with the correct kill-switch state.
+                    let state_ks = state_c.clone();
+                    let iface = cfg.interface.clone();
+                    glib::spawn_future_local(async move {
+                        state_ks.write().await.kill_switch_enabled = ks_active;
+                        if ks_active {
                             if let Err(e) = crate::helper::apply_kill_switch(&iface).await {
                                 tracing::warn!("apply kill switch (onboarding): {}", e);
                             }
-                        });
-                    }
+                        }
+                    });
 
                     scroll_to_next(&carousel_c, page_idx, n_pages);
                 }

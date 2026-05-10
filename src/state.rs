@@ -132,6 +132,7 @@ impl AppState {
     pub fn new_with_config(config: &Config) -> Self {
         Self {
             auto_connect: config.auto_connect,
+            kill_switch_enabled: config.kill_switch_enabled,
             interface: config.interface.clone(),
             selected_region_id: config.selected_region_id.clone(),
             auto_reconnect: config.auto_reconnect,

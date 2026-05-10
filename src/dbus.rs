@@ -2,6 +2,7 @@ use anyhow::Result;
 use tokio::sync::OnceCell;
 use zbus::dbus_proxy;
 use zbus::Connection;
+use zbus::MethodFlags;
 
 // ---------------------------------------------------------------------------
 // zbus 3.x proxy definitions
@@ -110,7 +111,12 @@ async fn start_unit(name: &str) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     manager
-        .start_unit(name, "replace")
+        .inner()
+        .call_with_flags::<_, _, zbus::zvariant::OwnedObjectPath>(
+            "StartUnit",
+            MethodFlags::AllowInteractiveAuth.into(),
+            &(name, "replace"),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("start_unit({}) failed: {}", name, e))?;
     Ok(())
@@ -122,7 +128,12 @@ async fn stop_unit(name: &str) -> Result<()> {
         .await
         .map_err(anyhow::Error::from)?;
     manager
-        .stop_unit(name, "replace")
+        .inner()
+        .call_with_flags::<_, _, zbus::zvariant::OwnedObjectPath>(
+            "StopUnit",
+            MethodFlags::AllowInteractiveAuth.into(),
+            &(name, "replace"),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("stop_unit({}) failed: {}", name, e))?;
     Ok(())

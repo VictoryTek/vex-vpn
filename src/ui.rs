@@ -324,7 +324,8 @@ async fn show_service_install_dialog(
         Some("Install VPN backend?"),
         Some(
             "The pia-vpn system service is not installed. Installing it \
-             requires administrator access and writes files to /etc/systemd/system/.\
+             requires administrator access and writes files to /run/systemd/system/ \
+             and /var/lib/vex-vpn/.\
              \n\nIt can be removed later from Preferences \u{2192} Advanced.",
         ),
     );

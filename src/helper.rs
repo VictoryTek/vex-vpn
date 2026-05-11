@@ -151,7 +151,8 @@ pub async fn remove_kill_switch() -> Result<()> {
 }
 
 /// Install the pia-vpn systemd backend service via the privileged helper.
-/// Writes all required files under /etc/vex-vpn/ and /etc/systemd/system/.
+/// Writes all required files under /var/lib/vex-vpn/ and registers the unit
+/// at /run/systemd/system/pia-vpn.service.
 pub async fn install_backend(pia_user: &str, pia_pass: &str) -> Result<()> {
     let resp = call_helper(&HelperRequest {
         op: "install_backend",
@@ -172,6 +173,25 @@ pub async fn install_backend(pia_user: &str, pia_pass: &str) -> Result<()> {
 pub async fn uninstall_backend() -> Result<()> {
     let resp = call_helper(&HelperRequest {
         op: "uninstall_backend",
+        interface: None,
+        allowed_interfaces: None,
+        pia_user: None,
+        pia_pass: None,
+    })
+    .await?;
+    if resp.ok {
+        Ok(())
+    } else {
+        bail!("helper error: {}", resp.error.unwrap_or_default())
+    }
+}
+
+/// Re-register the pia-vpn.service unit to /run/systemd/system/ after a
+/// reboot cleared the volatile /run/ tmpfs. Only succeeds if
+/// /var/lib/vex-vpn/pia-connect.sh exists (prior install detected).
+pub async fn reinstall_unit() -> Result<()> {
+    let resp = call_helper(&HelperRequest {
+        op: "reinstall_unit",
         interface: None,
         allowed_interfaces: None,
         pia_user: None,

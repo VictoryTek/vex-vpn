@@ -30,18 +30,18 @@ const SERVICE_UNIT: &str = r#"[Unit]
 Description=Connect to Private Internet Access VPN (WireGuard)
 Requires=network-online.target
 After=network.target network-online.target
-ConditionFileNotEmpty=/etc/vex-vpn/ca.rsa.4096.crt
-ConditionFileNotEmpty=/etc/vex-vpn/credentials.env
+ConditionFileNotEmpty=/var/lib/vex-vpn/ca.rsa.4096.crt
+ConditionFileNotEmpty=/var/lib/vex-vpn/credentials.env
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Restart=on-failure
-EnvironmentFile=/etc/vex-vpn/credentials.env
+EnvironmentFile=/var/lib/vex-vpn/credentials.env
 StateDirectory=pia-vpn
 CacheDirectory=pia-vpn
-ExecStart=/etc/vex-vpn/pia-connect.sh
-ExecStop=/etc/vex-vpn/pia-disconnect.sh
+ExecStart=/var/lib/vex-vpn/pia-connect.sh
+ExecStop=/var/lib/vex-vpn/pia-disconnect.sh
 
 [Install]
 WantedBy=multi-user.target
@@ -55,7 +55,7 @@ set -euo pipefail
 # Prefer NixOS system profile tools; fall back to standard FHS paths.
 export PATH="/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-CERT_FILE="/etc/vex-vpn/ca.rsa.4096.crt"
+CERT_FILE="/var/lib/vex-vpn/ca.rsa.4096.crt"
 IFACE="${VEX_VPN_IFACE:-wg0}"
 MAX_LATENCY="${VEX_VPN_MAX_LATENCY:-0.1}"
 DNS1="${VEX_VPN_DNS1:-10.0.0.241}"
@@ -222,6 +222,7 @@ enum Command {
         pia_pass: String,
     },
     UninstallBackend,
+    ReinstallUnit,
 }
 
 #[derive(Serialize)]
@@ -305,6 +306,7 @@ fn handle_command(cmd: Command) -> Response {
             handle_install_backend(pia_user, pia_pass)
         }
         Command::UninstallBackend => handle_uninstall_backend(),
+        Command::ReinstallUnit => handle_reinstall_unit(),
     }
 }
 
@@ -505,6 +507,30 @@ fn build_polkit_policy(helper_path: &str) -> String {
     )
 }
 
+/// Try to write the polkit policy to one of the well-known locations.
+/// Returns `true` on success, `false` if all attempts fail.
+/// Attempts in order:
+///   1. /etc/polkit-1/actions/  (standard FHS, read-only on NixOS)
+///   2. /run/polkit-1/actions/  (polkit 0.120+ runtime scan directory)
+fn try_write_polkit_policy(content: &[u8]) -> bool {
+    let candidates = [
+        "/etc/polkit-1/actions/org.vex-vpn.helper.policy",
+        "/run/polkit-1/actions/org.vex-vpn.helper.policy",
+    ];
+    for candidate in &candidates {
+        let path = std::path::Path::new(candidate);
+        if let Some(dir) = path.parent() {
+            if std::fs::create_dir_all(dir).is_err() {
+                continue;
+            }
+        }
+        if write_file_atomic(path, content, 0o644).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
     // Validate credentials: non-empty, ≤128 bytes, no ASCII control chars.
     if pia_user.is_empty() || pia_user.len() > 128 || pia_user.bytes().any(|b| b < 0x20) {
@@ -522,25 +548,26 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
         };
     }
 
-    // 1. Create /etc/vex-vpn/ directory.
-    if let Err(e) = std::fs::create_dir_all("/etc/vex-vpn") {
+    // 1. Create /var/lib/vex-vpn/ directory.
+    if let Err(e) = std::fs::create_dir_all("/var/lib/vex-vpn") {
         return Response {
             ok: false,
-            error: Some(format!("create /etc/vex-vpn: {}", e)),
+            error: Some(format!("create /var/lib/vex-vpn: {}", e)),
             active: None,
         };
     }
-    if let Err(e) = std::fs::set_permissions("/etc/vex-vpn", std::fs::Permissions::from_mode(0o755))
+    if let Err(e) =
+        std::fs::set_permissions("/var/lib/vex-vpn", std::fs::Permissions::from_mode(0o755))
     {
         return Response {
             ok: false,
-            error: Some(format!("chmod /etc/vex-vpn: {}", e)),
+            error: Some(format!("chmod /var/lib/vex-vpn: {}", e)),
             active: None,
         };
     }
 
     // 2. Write CA certificate (mode 0644).
-    let ca_path = std::path::Path::new("/etc/vex-vpn/ca.rsa.4096.crt");
+    let ca_path = std::path::Path::new("/var/lib/vex-vpn/ca.rsa.4096.crt");
     if let Err(e) = write_file_atomic(ca_path, PIA_CA_CERT, 0o644) {
         return Response {
             ok: false,
@@ -551,7 +578,7 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
 
     // 3. Write credentials.env atomically (mode 0600).
     let creds_content = format!("PIA_USER={}\nPIA_PASS={}\n", pia_user, pia_pass);
-    let creds_path = std::path::Path::new("/etc/vex-vpn/credentials.env");
+    let creds_path = std::path::Path::new("/var/lib/vex-vpn/credentials.env");
     if let Err(e) = write_file_atomic(creds_path, creds_content.as_bytes(), 0o600) {
         return Response {
             ok: false,
@@ -561,7 +588,7 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
     }
 
     // 4. Write connect script (mode 0755).
-    let connect_path = std::path::Path::new("/etc/vex-vpn/pia-connect.sh");
+    let connect_path = std::path::Path::new("/var/lib/vex-vpn/pia-connect.sh");
     if let Err(e) = write_file_atomic(connect_path, CONNECT_SCRIPT.as_bytes(), 0o755) {
         return Response {
             ok: false,
@@ -571,7 +598,7 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
     }
 
     // 5. Write disconnect script (mode 0755).
-    let disconnect_path = std::path::Path::new("/etc/vex-vpn/pia-disconnect.sh");
+    let disconnect_path = std::path::Path::new("/var/lib/vex-vpn/pia-disconnect.sh");
     if let Err(e) = write_file_atomic(disconnect_path, DISCONNECT_SCRIPT.as_bytes(), 0o755) {
         return Response {
             ok: false,
@@ -580,8 +607,15 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
         };
     }
 
-    // 6. Write systemd unit file (mode 0644).
-    let unit_path = std::path::Path::new("/etc/systemd/system/pia-vpn.service");
+    // 6. Write systemd unit file (mode 0644) to /run/systemd/system/ (writable on NixOS).
+    if let Err(e) = std::fs::create_dir_all("/run/systemd/system") {
+        return Response {
+            ok: false,
+            error: Some(format!("create /run/systemd/system: {}", e)),
+            active: None,
+        };
+    }
+    let unit_path = std::path::Path::new("/run/systemd/system/pia-vpn.service");
     if let Err(e) = write_file_atomic(unit_path, SERVICE_UNIT.as_bytes(), 0o644) {
         return Response {
             ok: false,
@@ -591,6 +625,8 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
     }
 
     // 7. Write polkit policy with the real helper binary path.
+    // This is non-fatal on NixOS where /etc/polkit-1/actions/ is read-only —
+    // the NixOS module installs the policy via Nix instead.
     let self_path = match std::fs::read_link("/proc/self/exe") {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(e) => {
@@ -602,20 +638,25 @@ fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
         }
     };
     let policy_content = build_polkit_policy(&self_path);
-    if let Err(e) = std::fs::create_dir_all("/etc/polkit-1/actions") {
-        return Response {
-            ok: false,
-            error: Some(format!("create polkit actions dir: {}", e)),
-            active: None,
-        };
-    }
-    let policy_path = std::path::Path::new("/etc/polkit-1/actions/org.vex-vpn.helper.policy");
-    if let Err(e) = write_file_atomic(policy_path, policy_content.as_bytes(), 0o644) {
-        return Response {
-            ok: false,
-            error: Some(format!("write polkit policy: {}", e)),
-            active: None,
-        };
+    let policy_written = try_write_polkit_policy(policy_content.as_bytes());
+    if !policy_written {
+        // Check whether the NixOS module already registered the action.
+        let nixos_policy = std::path::Path::new(
+            "/run/current-system/sw/share/polkit-1/actions/org.vex-vpn.helper.policy",
+        );
+        if !nixos_policy.exists() {
+            return Response {
+                ok: false,
+                error: Some(
+                    "polkit policy could not be written and action not found; \
+                     pkexec will not work without a polkit policy"
+                        .into(),
+                ),
+                active: None,
+            };
+        }
+        // NixOS module covers it — continue.
+        eprintln!("polkit write skipped: action already registered by NixOS module");
     }
 
     // 8. Run systemctl daemon-reload.
@@ -662,11 +703,20 @@ fn handle_uninstall_backend() -> Response {
         .stderr(Stdio::null())
         .status();
 
-    // Remove unit file (ignore ENOENT).
-    let _ = std::fs::remove_file("/etc/systemd/system/pia-vpn.service");
+    // Remove volatile unit file from /run/ (ignore ENOENT).
+    let _ = std::fs::remove_file("/run/systemd/system/pia-vpn.service");
 
-    // Remove credentials (sensitive data — always remove on uninstall).
-    let _ = std::fs::remove_file("/etc/vex-vpn/credentials.env");
+    // Remove persistent installer data.
+    let _ = std::fs::remove_file("/var/lib/vex-vpn/credentials.env");
+    let _ = std::fs::remove_file("/var/lib/vex-vpn/pia-connect.sh");
+    let _ = std::fs::remove_file("/var/lib/vex-vpn/pia-disconnect.sh");
+    let _ = std::fs::remove_file("/var/lib/vex-vpn/ca.rsa.4096.crt");
+    // Remove directory only if empty (don't fail if user added files).
+    let _ = std::fs::remove_dir("/var/lib/vex-vpn");
+
+    // Remove polkit policy from either location (ignore errors).
+    let _ = std::fs::remove_file("/etc/polkit-1/actions/org.vex-vpn.helper.policy");
+    let _ = std::fs::remove_file("/run/polkit-1/actions/org.vex-vpn.helper.policy");
 
     // Run daemon-reload.
     let status = std::process::Command::new("systemctl")
@@ -688,5 +738,59 @@ fn handle_uninstall_backend() -> Response {
         ok: true,
         error: None,
         active: None,
+    }
+}
+
+/// Re-register the pia-vpn.service unit to /run/systemd/system/ after a
+/// reboot erased the volatile unit file. Only proceeds if the persistent
+/// installer data at /var/lib/vex-vpn/ is present.
+fn handle_reinstall_unit() -> Response {
+    if !std::path::Path::new("/var/lib/vex-vpn/pia-connect.sh").exists() {
+        return Response {
+            ok: false,
+            error: Some("no prior installation found at /var/lib/vex-vpn/".into()),
+            active: None,
+        };
+    }
+
+    if let Err(e) = std::fs::create_dir_all("/run/systemd/system") {
+        return Response {
+            ok: false,
+            error: Some(format!("create /run/systemd/system: {}", e)),
+            active: None,
+        };
+    }
+
+    let unit_path = std::path::Path::new("/run/systemd/system/pia-vpn.service");
+    if let Err(e) = write_file_atomic(unit_path, SERVICE_UNIT.as_bytes(), 0o644) {
+        return Response {
+            ok: false,
+            error: Some(format!("reinstall unit file: {}", e)),
+            active: None,
+        };
+    }
+
+    let status = std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => Response {
+            ok: true,
+            error: None,
+            active: None,
+        },
+        Ok(s) => Response {
+            ok: false,
+            error: Some(format!("daemon-reload failed: exit {:?}", s.code())),
+            active: None,
+        },
+        Err(e) => Response {
+            ok: false,
+            error: Some(format!("daemon-reload: {}", e)),
+            active: None,
+        },
     }
 }

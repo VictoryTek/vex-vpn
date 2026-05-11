@@ -51,9 +51,20 @@ fn main() -> Result<()> {
     let (state_change_tx, _dummy_rx) = tokio::sync::broadcast::channel::<()>(16);
 
     // Spawn background poll loop inside the runtime.
+    // Before entering the poll loop, check if a prior self-install is detected
+    // but the volatile unit file was lost (typical after reboot — /run/ is tmpfs).
+    // If so, silently re-register the unit; the install dialog is only shown
+    // when both the unit is missing AND no installer data exists.
     let state_for_poll = app_state.clone();
     let poll_tx = state_change_tx.clone();
     rt.spawn(async move {
+        let data_installed = std::path::Path::new("/var/lib/vex-vpn/pia-connect.sh").exists();
+        if data_installed && !crate::dbus::is_service_unit_installed("pia-vpn.service").await {
+            info!("Detected stale install (reboot): re-registering pia-vpn.service");
+            if let Err(e) = crate::helper::reinstall_unit().await {
+                warn!("Auto-reinstall unit failed: {e:#}");
+            }
+        }
         state::poll_loop(state_for_poll, poll_tx).await;
     });
 

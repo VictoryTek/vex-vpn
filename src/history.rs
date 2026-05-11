@@ -104,6 +104,8 @@ pub fn format_timestamp(ts: u64) -> String {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_format_duration() {
         assert_eq!(format_duration(45), "45s");
@@ -129,6 +131,7 @@ mod tests {
 
     #[test]
     fn test_load_recent_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
         // Set XDG_STATE_HOME to a temp dir to avoid touching real history.
         let dir = std::env::temp_dir().join("vex_vpn_test_history_empty");
         let prev = std::env::var("XDG_STATE_HOME").ok();
@@ -144,6 +147,7 @@ mod tests {
 
     #[test]
     fn test_history_path_respects_xdg_state_home() {
+        let _lock = ENV_LOCK.lock().unwrap();
         std::env::set_var("XDG_STATE_HOME", "/tmp/test_state");
         let path = history_path();
         assert_eq!(

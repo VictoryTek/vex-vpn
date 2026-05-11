@@ -17,6 +17,7 @@ trait SystemdManager {
     fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     fn load_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn get_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
 #[dbus_proxy(
@@ -26,6 +27,9 @@ trait SystemdManager {
 trait SystemdUnit {
     #[dbus_proxy(property)]
     fn active_state(&self) -> zbus::Result<String>;
+
+    #[dbus_proxy(property)]
+    fn load_state(&self) -> zbus::Result<String>;
 }
 
 /// NetworkManager global connectivity state constants.
@@ -80,6 +84,36 @@ pub async fn get_service_status(service: &str) -> Result<String> {
         .map_err(anyhow::Error::from)?;
 
     unit.active_state().await.map_err(anyhow::Error::from)
+}
+
+/// Returns `true` if the systemd unit file for `service` is present on disk
+/// (`LoadState != "not-found"`). Uses `LoadUnit` so it works even when the
+/// unit has never been started. Returns `false` on any D-Bus error.
+pub async fn is_service_unit_installed(service: &str) -> bool {
+    let Ok(conn) = system_conn().await else {
+        return false;
+    };
+    let Ok(manager) = SystemdManagerProxy::new(&conn).await else {
+        return false;
+    };
+    let Ok(unit_path) = manager.load_unit(service).await else {
+        return false;
+    };
+    let path_ref = unit_path.as_ref();
+    let unit = match SystemdUnitProxy::builder(&conn)
+        .path(path_ref)
+        .map_err(|_| ())
+    {
+        Ok(b) => match b.build().await {
+            Ok(u) => u,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    unit.load_state()
+        .await
+        .map(|s| s != "not-found")
+        .unwrap_or(false)
 }
 
 pub async fn connect_vpn() -> Result<()> {

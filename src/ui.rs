@@ -186,6 +186,7 @@ pub fn build_ui(
 
     let (main_page, live) = build_main_page(
         state.clone(),
+        window.clone(),
         initial_auto_connect,
         initial_kill_switch,
         toast_overlay.clone(),
@@ -257,6 +258,9 @@ pub fn build_ui(
         });
     }
 
+    // Clone connect_btn before it is moved into the timeout closure below.
+    let startup_connect_btn = live.connect_btn.clone();
+
     // Refresh UI every 3 seconds from the poll loop state.
     glib::timeout_add_seconds_local(3, move || {
         let state = state.clone();
@@ -286,8 +290,82 @@ pub fn build_ui(
     });
 
     window.present();
+
+    // Startup check: if pia-vpn.service is not installed, offer self-install.
+    {
+        let window_ref = window.clone();
+        let toasts_ref = toast_overlay.clone();
+        let connect_btn_ref = startup_connect_btn;
+        glib::spawn_future_local(async move {
+            if !crate::dbus::is_service_unit_installed("pia-vpn.service").await {
+                connect_btn_ref.set_sensitive(false);
+                show_service_install_dialog(&window_ref, &toasts_ref, &connect_btn_ref).await;
+            }
+        });
+    }
+
     window
 }
+// ---------------------------------------------------------------------------
+// Service install dialog
+// ---------------------------------------------------------------------------
+
+/// Show a dialog offering to install the pia-vpn systemd backend.
+/// On "Install", calls the privileged helper to write all required files.
+/// On "Cancel", leaves the connect button insensitive — the user can still
+/// browse servers but cannot connect until the service is installed.
+async fn show_service_install_dialog(
+    parent: &adw::ApplicationWindow,
+    toasts: &adw::ToastOverlay,
+    connect_btn: &gtk4::Button,
+) {
+    let dialog = adw::MessageDialog::new(
+        Some(parent),
+        Some("Install VPN backend?"),
+        Some(
+            "The pia-vpn system service is not installed. Installing it \
+             requires administrator access and writes files to /etc/systemd/system/.\
+             \n\nIt can be removed later from Preferences \u{2192} Advanced.",
+        ),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("install", "Install");
+    dialog.set_response_appearance("install", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("install"));
+    dialog.set_close_response("cancel");
+
+    let response = dialog.choose_future().await;
+    if response.as_str() != "install" {
+        // Connect button stays disabled; user can restart or open Prefs later.
+        return;
+    }
+
+    // Read credentials from the user's credential store.
+    let creds = match crate::secrets::load_sync_hint() {
+        Ok(Some(c)) => c,
+        _ => {
+            toasts.add_toast(adw::Toast::new(
+                "Cannot install: credentials not found. Please sign in first.",
+            ));
+            return;
+        }
+    };
+
+    toasts.add_toast(adw::Toast::new("Installing VPN backend\u{2026}"));
+
+    match crate::helper::install_backend(&creds.username, &creds.password).await {
+        Ok(()) => {
+            connect_btn.set_sensitive(true);
+            toasts.add_toast(adw::Toast::new("VPN backend installed successfully."));
+        }
+        Err(e) => {
+            tracing::error!("install_backend: {}", e);
+            toasts.add_toast(adw::Toast::new(&format!("Install failed: {e:#}")));
+            // connect_btn stays insensitive
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Primary menu (gio::Menu) and About window
 // ---------------------------------------------------------------------------
@@ -499,6 +577,7 @@ fn build_history_page() -> adw::NavigationPage {
 
 fn build_main_page(
     state: Arc<RwLock<AppState>>,
+    window: adw::ApplicationWindow,
     initial_auto_connect: bool,
     initial_kill_switch: bool,
     toasts: adw::ToastOverlay,
@@ -548,6 +627,7 @@ fn build_main_page(
         let lbl_c = btn_label.clone();
         let icon_c = btn_icon.clone();
         let toast_c = toasts.clone();
+        let window_c = window.clone();
 
         connect_btn.connect_clicked(move |_| {
             let state = state_c.clone();
@@ -556,6 +636,7 @@ fn build_main_page(
             let lbl = lbl_c.clone();
             let icon = icon_c.clone();
             let toast = toast_c.clone();
+            let win = window_c.clone();
 
             glib::spawn_future_local(async move {
                 let current = state.read().await.status.clone();
@@ -600,17 +681,12 @@ fn build_main_page(
                                 icon.set_icon_name(Some("network-vpn-disabled-symbolic"));
 
                                 if msg.contains("NoSuchUnit") || msg.contains("No such unit") {
-                                    let dialog = adw::MessageDialog::new(
-                                        None::<&adw::ApplicationWindow>,
-                                        Some("VPN service not installed"),
-                                        Some("The pia-vpn.service systemd unit was not found.\n\nEnable the vex-vpn NixOS module in your system configuration:\n\n  services.vex-vpn.enable = true;\n\nThen run: sudo nixos-rebuild switch"),
-                                    );
-                                    dialog.add_response("ok", "OK");
-                                    dialog.set_default_response(Some("ok"));
-                                    dialog.present();
+                                    show_service_install_dialog(&win, &toast, &btn).await;
                                 } else {
                                     tracing::error!("connect: {}", e);
-                                    toast.add_toast(adw::Toast::new(&format!("Connect failed: {e:#}")));
+                                    toast.add_toast(adw::Toast::new(&format!(
+                                        "Connect failed: {e:#}"
+                                    )));
                                 }
                             }
                         }

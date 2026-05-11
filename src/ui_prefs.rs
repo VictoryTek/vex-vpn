@@ -298,5 +298,64 @@ fn build_advanced_page(state: Arc<RwLock<AppState>>) -> adw::PreferencesPage {
     group.add(&log_row);
 
     page.add(&group);
+
+    // ── VPN Backend Service ──────────────────────────────────────────────────
+    let backend_group = adw::PreferencesGroup::builder()
+        .title("VPN Backend Service")
+        .description("The pia-vpn system service manages the WireGuard tunnel.")
+        .build();
+
+    let backend_status_row = adw::ActionRow::builder()
+        .title("Service status")
+        .subtitle("Checking\u{2026}")
+        .build();
+    backend_group.add(&backend_status_row);
+
+    // Check install status asynchronously and update the subtitle.
+    {
+        let row = backend_status_row.clone();
+        glib::spawn_future_local(async move {
+            let installed = crate::dbus::is_service_unit_installed("pia-vpn.service").await;
+            row.set_subtitle(if installed {
+                "Installed"
+            } else {
+                "Not installed"
+            });
+        });
+    }
+
+    // Uninstall button — always shown; user triggers uninstall from here.
+    let uninstall_btn = gtk4::Button::builder()
+        .label("Remove VPN backend service")
+        .css_classes(["destructive-action"])
+        .margin_top(6)
+        .margin_bottom(6)
+        .halign(gtk4::Align::End)
+        .build();
+
+    {
+        let status_row = backend_status_row.clone();
+        uninstall_btn.connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            let row = status_row.clone();
+            let btn_ref = btn.clone();
+            glib::spawn_future_local(async move {
+                match crate::helper::uninstall_backend().await {
+                    Ok(()) => {
+                        row.set_subtitle("Not installed");
+                    }
+                    Err(e) => {
+                        tracing::error!("uninstall_backend: {}", e);
+                        btn_ref.set_sensitive(true);
+                        row.set_subtitle(&format!("Error: {e:#}"));
+                    }
+                }
+            });
+        });
+    }
+
+    backend_group.add(&uninstall_btn);
+    page.add(&backend_group);
+
     page
 }

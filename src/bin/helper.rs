@@ -14,9 +14,198 @@
 //! No GTK, no Tokio, no reqwest — pure sync stdin/stdout.
 
 use std::io::{self, BufRead, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Embedded file constants — written to /etc/ during InstallBackend
+// ---------------------------------------------------------------------------
+
+/// PIA RSA-4096 CA certificate — compiled into the helper binary.
+const PIA_CA_CERT: &[u8] = include_bytes!("../../assets/ca.rsa.4096.crt");
+
+const SERVICE_UNIT: &str = r#"[Unit]
+Description=Connect to Private Internet Access VPN (WireGuard)
+Requires=network-online.target
+After=network.target network-online.target
+ConditionFileNotEmpty=/etc/vex-vpn/ca.rsa.4096.crt
+ConditionFileNotEmpty=/etc/vex-vpn/credentials.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+EnvironmentFile=/etc/vex-vpn/credentials.env
+StateDirectory=pia-vpn
+CacheDirectory=pia-vpn
+ExecStart=/etc/vex-vpn/pia-connect.sh
+ExecStop=/etc/vex-vpn/pia-disconnect.sh
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+const CONNECT_SCRIPT: &str = r#"#!/usr/bin/env bash
+# pia-connect.sh — installed by vex-vpn self-install
+# Adapted from https://github.com/tadfisher/flake (MIT licence)
+set -euo pipefail
+
+# Prefer NixOS system profile tools; fall back to standard FHS paths.
+export PATH="/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+CERT_FILE="/etc/vex-vpn/ca.rsa.4096.crt"
+IFACE="${VEX_VPN_IFACE:-wg0}"
+MAX_LATENCY="${VEX_VPN_MAX_LATENCY:-0.1}"
+DNS1="${VEX_VPN_DNS1:-10.0.0.241}"
+DNS2="${VEX_VPN_DNS2:-10.0.0.242}"
+
+# Locate systemd-networkd-wait-online (private systemd binary, not in standard PATH).
+NETWORKD_WAIT_ONLINE=""
+for _p in \
+    /run/current-system/sw/lib/systemd/systemd-networkd-wait-online \
+    /usr/lib/systemd/systemd-networkd-wait-online \
+    /lib/systemd/systemd-networkd-wait-online; do
+  [[ -x "$_p" ]] && { NETWORKD_WAIT_ONLINE="$_p"; break; }
+done
+if [[ -z "$NETWORKD_WAIT_ONLINE" ]]; then
+  echo "ERROR: systemd-networkd-wait-online not found in standard locations." >&2
+  echo "Ensure systemd is installed and systemd-networkd is available." >&2
+  exit 1
+fi
+
+printServerLatency() {
+  serverIP="$1"
+  regionID="$2"
+  regionName="$(echo ${@:3} | sed 's/ false//' | sed 's/true/(geo)/')"
+  time=$(LC_NUMERIC=en_US.utf8 curl -o /dev/null -s \
+    --connect-timeout "${MAX_LATENCY}" \
+    --write-out "%{time_connect}" \
+    http://$serverIP:443)
+  if [ $? -eq 0 ]; then
+    >&2 echo Got latency ${time}s for region: $regionName
+    echo $time $regionID $serverIP
+  fi
+}
+export -f printServerLatency
+export MAX_LATENCY
+
+echo Determining region...
+serverlist='https://serverlist.piaservers.net/vpninfo/servers/v4'
+allregions=$(curl -s "$serverlist" | head -1)
+filtered="$(echo $allregions | jq -r '.regions[]
+           | .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)')"
+best="$(echo "$filtered" | xargs -I{} bash -c 'printServerLatency {}' |
+        sort | head -1 | awk '{ print $2 }')"
+if [ -z "$best" ]; then
+  >&2 echo "No region found with latency under ${MAX_LATENCY} s. Stopping."
+  exit 1
+fi
+region="$(echo $allregions | jq --arg REGION_ID "$best" -r '.regions[] | select(.id==$REGION_ID)')"
+meta_ip="$(echo $region | jq -r '.servers.meta[0].ip')"
+meta_hostname="$(echo $region | jq -r '.servers.meta[0].cn')"
+wg_ip="$(echo $region | jq -r '.servers.wg[0].ip')"
+wg_hostname="$(echo $region | jq -r '.servers.wg[0].cn')"
+echo "$region" > "$STATE_DIRECTORY/region.json"
+
+echo Generating token...
+tokenResponse="$(curl -s -u "$PIA_USER:$PIA_PASS" \
+  --connect-to "$meta_hostname::$meta_ip:" \
+  --cacert "$CERT_FILE" \
+  "https://$meta_hostname/authv3/generateToken")"
+if [ "$(echo "$tokenResponse" | jq -r '.status')" != "OK" ]; then
+  >&2 echo "Failed to generate token. Stopping."
+  exit 1
+fi
+echo "$tokenResponse" > "$STATE_DIRECTORY/token.json"
+token="$(echo "$tokenResponse" | jq -r '.token')"
+
+echo Connecting to the PIA WireGuard API on $wg_ip...
+privateKey="$(wg genkey)"
+publicKey="$(echo "$privateKey" | wg pubkey)"
+json="$(curl -s -G \
+  --connect-to "$wg_hostname::$wg_ip:" \
+  --cacert "$CERT_FILE" \
+  --data-urlencode "pt=${token}" \
+  --data-urlencode "pubkey=$publicKey" \
+  "https://${wg_hostname}:1337/addKey")"
+status="$(echo "$json" | jq -r '.status')"
+if [ "$status" != "OK" ]; then
+  >&2 echo "Server did not return OK. Stopping."
+  >&2 echo "$json"
+  exit 1
+fi
+
+echo Creating network interface ${IFACE}.
+echo "$json" > "$STATE_DIRECTORY/wireguard.json"
+
+gateway="$(echo "$json" | jq -r '.server_ip')"
+servervip="$(echo "$json" | jq -r '.server_vip')"
+peerip=$(echo "$json" | jq -r '.peer_ip')
+
+mkdir -p /run/systemd/network/
+touch /run/systemd/network/60-${IFACE}.{netdev,network}
+chown root:systemd-network /run/systemd/network/60-${IFACE}.{netdev,network}
+chmod 640 /run/systemd/network/60-${IFACE}.{netdev,network}
+
+cat > /run/systemd/network/60-${IFACE}.netdev <<NETDEV
+[NetDev]
+Description = WireGuard PIA network device
+Name = ${IFACE}
+Kind = wireguard
+
+[WireGuard]
+PrivateKey = $privateKey
+
+[WireGuardPeer]
+PublicKey = $(echo "$json" | jq -r '.server_key')
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = ${wg_ip}:$(echo "$json" | jq -r '.server_port')
+PersistentKeepalive = 25
+NETDEV
+
+cat > /run/systemd/network/60-${IFACE}.network <<NETCFG
+[Match]
+Name = ${IFACE}
+
+[Network]
+Description = WireGuard PIA network interface
+Address = ${peerip}/32
+DNS = ${DNS1}
+DNS = ${DNS2}
+IPForward = ipv4
+
+[RoutingPolicyRule]
+From = ${peerip}
+Table = 42
+NETCFG
+
+echo Bringing up network interface ${IFACE}.
+
+networkctl reload
+networkctl up ${IFACE}
+
+"$NETWORKD_WAIT_ONLINE" -i "${IFACE}"
+
+ip route add default dev "${IFACE}" table 42
+"#;
+
+const DISCONNECT_SCRIPT: &str = r#"#!/usr/bin/env bash
+# pia-disconnect.sh — installed by vex-vpn self-install
+set -euo pipefail
+
+export PATH="/run/current-system/sw/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+IFACE="${VEX_VPN_IFACE:-wg0}"
+
+echo Removing network interface ${IFACE}.
+rm /run/systemd/network/60-${IFACE}.{netdev,network} || true
+
+echo Bringing down network interface ${IFACE}.
+networkctl down ${IFACE}
+networkctl reload
+"#;
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -28,6 +217,11 @@ enum Command {
     },
     DisableKillSwitch,
     Status,
+    InstallBackend {
+        pia_user: String,
+        pia_pass: String,
+    },
+    UninstallBackend,
 }
 
 #[derive(Serialize)]
@@ -107,6 +301,10 @@ fn handle_command(cmd: Command) -> Response {
         }
         Command::DisableKillSwitch => run_nft_disable(),
         Command::Status => check_status(),
+        Command::InstallBackend { pia_user, pia_pass } => {
+            handle_install_backend(pia_user, pia_pass)
+        }
+        Command::UninstallBackend => handle_uninstall_backend(),
     }
 }
 
@@ -248,5 +446,247 @@ fn check_status() -> Response {
         ok: true,
         error: None,
         active: Some(active),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InstallBackend / UninstallBackend helpers
+// ---------------------------------------------------------------------------
+
+/// Write `content` to `path` atomically via a temp file + rename.
+/// The temp file is created in the same directory with mode `0o600`,
+/// then permissions are set to `mode` before the rename.
+fn write_file_atomic(path: &std::path::Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = path.parent().unwrap_or(std::path::Path::new("/"));
+    let filename = path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("tmp"));
+    let tmp = dir.join(format!(".{}.tmp", filename.to_string_lossy()));
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600) // restrictive while writing
+            .open(&tmp)?;
+        f.write_all(content)?;
+    }
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+fn build_polkit_policy(helper_path: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>vex-vpn</vendor>
+  <vendor_url>https://github.com/victorytek/vex-vpn</vendor_url>
+
+  <action id="org.vex-vpn.helper.run">
+    <description>Manage VPN kill switch via nftables</description>
+    <message>Authentication is required to control the VPN kill switch</message>
+    <icon_name>network-vpn-symbolic</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">{}</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
+"#,
+        helper_path
+    )
+}
+
+fn handle_install_backend(pia_user: String, pia_pass: String) -> Response {
+    // Validate credentials: non-empty, ≤128 bytes, no ASCII control chars.
+    if pia_user.is_empty() || pia_user.len() > 128 || pia_user.bytes().any(|b| b < 0x20) {
+        return Response {
+            ok: false,
+            error: Some("invalid pia_user: must be non-empty, ≤128 bytes, no control chars".into()),
+            active: None,
+        };
+    }
+    if pia_pass.is_empty() || pia_pass.len() > 128 || pia_pass.bytes().any(|b| b < 0x20) {
+        return Response {
+            ok: false,
+            error: Some("invalid pia_pass: must be non-empty, ≤128 bytes, no control chars".into()),
+            active: None,
+        };
+    }
+
+    // 1. Create /etc/vex-vpn/ directory.
+    if let Err(e) = std::fs::create_dir_all("/etc/vex-vpn") {
+        return Response {
+            ok: false,
+            error: Some(format!("create /etc/vex-vpn: {}", e)),
+            active: None,
+        };
+    }
+    if let Err(e) = std::fs::set_permissions("/etc/vex-vpn", std::fs::Permissions::from_mode(0o755))
+    {
+        return Response {
+            ok: false,
+            error: Some(format!("chmod /etc/vex-vpn: {}", e)),
+            active: None,
+        };
+    }
+
+    // 2. Write CA certificate (mode 0644).
+    let ca_path = std::path::Path::new("/etc/vex-vpn/ca.rsa.4096.crt");
+    if let Err(e) = write_file_atomic(ca_path, PIA_CA_CERT, 0o644) {
+        return Response {
+            ok: false,
+            error: Some(format!("write ca cert: {}", e)),
+            active: None,
+        };
+    }
+
+    // 3. Write credentials.env atomically (mode 0600).
+    let creds_content = format!("PIA_USER={}\nPIA_PASS={}\n", pia_user, pia_pass);
+    let creds_path = std::path::Path::new("/etc/vex-vpn/credentials.env");
+    if let Err(e) = write_file_atomic(creds_path, creds_content.as_bytes(), 0o600) {
+        return Response {
+            ok: false,
+            error: Some(format!("write credentials.env: {}", e)),
+            active: None,
+        };
+    }
+
+    // 4. Write connect script (mode 0755).
+    let connect_path = std::path::Path::new("/etc/vex-vpn/pia-connect.sh");
+    if let Err(e) = write_file_atomic(connect_path, CONNECT_SCRIPT.as_bytes(), 0o755) {
+        return Response {
+            ok: false,
+            error: Some(format!("write pia-connect.sh: {}", e)),
+            active: None,
+        };
+    }
+
+    // 5. Write disconnect script (mode 0755).
+    let disconnect_path = std::path::Path::new("/etc/vex-vpn/pia-disconnect.sh");
+    if let Err(e) = write_file_atomic(disconnect_path, DISCONNECT_SCRIPT.as_bytes(), 0o755) {
+        return Response {
+            ok: false,
+            error: Some(format!("write pia-disconnect.sh: {}", e)),
+            active: None,
+        };
+    }
+
+    // 6. Write systemd unit file (mode 0644).
+    let unit_path = std::path::Path::new("/etc/systemd/system/pia-vpn.service");
+    if let Err(e) = write_file_atomic(unit_path, SERVICE_UNIT.as_bytes(), 0o644) {
+        return Response {
+            ok: false,
+            error: Some(format!("write pia-vpn.service: {}", e)),
+            active: None,
+        };
+    }
+
+    // 7. Write polkit policy with the real helper binary path.
+    let self_path = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(e) => {
+            return Response {
+                ok: false,
+                error: Some(format!("read_link /proc/self/exe: {}", e)),
+                active: None,
+            };
+        }
+    };
+    let policy_content = build_polkit_policy(&self_path);
+    if let Err(e) = std::fs::create_dir_all("/etc/polkit-1/actions") {
+        return Response {
+            ok: false,
+            error: Some(format!("create polkit actions dir: {}", e)),
+            active: None,
+        };
+    }
+    let policy_path = std::path::Path::new("/etc/polkit-1/actions/org.vex-vpn.helper.policy");
+    if let Err(e) = write_file_atomic(policy_path, policy_content.as_bytes(), 0o644) {
+        return Response {
+            ok: false,
+            error: Some(format!("write polkit policy: {}", e)),
+            active: None,
+        };
+    }
+
+    // 8. Run systemctl daemon-reload.
+    let status = std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => {
+            return Response {
+                ok: false,
+                error: Some(format!(
+                    "systemctl daemon-reload failed: exit code {:?}",
+                    s.code()
+                )),
+                active: None,
+            };
+        }
+        Err(e) => {
+            return Response {
+                ok: false,
+                error: Some(format!("systemctl daemon-reload: {}", e)),
+                active: None,
+            };
+        }
+    }
+
+    Response {
+        ok: true,
+        error: None,
+        active: None,
+    }
+}
+
+fn handle_uninstall_backend() -> Response {
+    // Stop any running instance (ignore errors — may already be stopped).
+    let _ = std::process::Command::new("systemctl")
+        .args(["stop", "pia-vpn.service"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    // Remove unit file (ignore ENOENT).
+    let _ = std::fs::remove_file("/etc/systemd/system/pia-vpn.service");
+
+    // Remove credentials (sensitive data — always remove on uninstall).
+    let _ = std::fs::remove_file("/etc/vex-vpn/credentials.env");
+
+    // Run daemon-reload.
+    let status = std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    if let Err(e) = status {
+        return Response {
+            ok: false,
+            error: Some(format!("systemctl daemon-reload: {}", e)),
+            active: None,
+        };
+    }
+
+    Response {
+        ok: true,
+        error: None,
+        active: None,
     }
 }

@@ -9,16 +9,41 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-/// Path to the helper binary.
-/// NixOS installs it via `environment.pathsToLink = ["/libexec"]`.
-/// Dev builds fall back to searching PATH.
-fn helper_path() -> &'static str {
-    const NIXOS_PATH: &str = "/run/current-system/sw/libexec/vex-vpn-helper";
-    if std::path::Path::new(NIXOS_PATH).exists() {
-        NIXOS_PATH
-    } else {
-        "vex-vpn-helper"
+/// Resolve the path to the helper binary.
+/// Checks several Nix profile and install locations before falling back to PATH.
+fn helper_path() -> String {
+    use std::path::Path;
+    // 1. NixOS system profile (module-installed).
+    if Path::new("/run/current-system/sw/libexec/vex-vpn-helper").exists() {
+        return "/run/current-system/sw/libexec/vex-vpn-helper".to_owned();
     }
+    // 2. User Nix profile (nix profile install).
+    if let Ok(home) = std::env::var("HOME") {
+        let p = format!("{}/.nix-profile/libexec/vex-vpn-helper", home);
+        if Path::new(&p).exists() {
+            return p;
+        }
+    }
+    // 3. System-level Nix profile.
+    if Path::new("/nix/var/nix/profiles/default/libexec/vex-vpn-helper").exists() {
+        return "/nix/var/nix/profiles/default/libexec/vex-vpn-helper".to_owned();
+    }
+    // 4. Sibling libexec/ of current binary (covers `nix run` store path).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            // binary at $out/bin/vex-vpn → helper at $out/libexec/vex-vpn-helper
+            let candidate = bin_dir
+                .parent()
+                .map(|p| p.join("libexec").join("vex-vpn-helper"));
+            if let Some(p) = candidate {
+                if p.exists() {
+                    return p.to_string_lossy().into_owned();
+                }
+            }
+        }
+    }
+    // 5. PATH fallback (dev builds).
+    "vex-vpn-helper".to_owned()
 }
 
 #[derive(Serialize)]
@@ -28,6 +53,10 @@ struct HelperRequest<'a> {
     interface: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     allowed_interfaces: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pia_user: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pia_pass: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -93,6 +122,8 @@ pub async fn apply_kill_switch(interface: &str) -> Result<()> {
         op: "enable_kill_switch",
         interface: Some(interface),
         allowed_interfaces: Some(&config.kill_switch_allowed_ifaces),
+        pia_user: None,
+        pia_pass: None,
     })
     .await?;
     if resp.ok {
@@ -108,6 +139,43 @@ pub async fn remove_kill_switch() -> Result<()> {
         op: "disable_kill_switch",
         interface: None,
         allowed_interfaces: None,
+        pia_user: None,
+        pia_pass: None,
+    })
+    .await?;
+    if resp.ok {
+        Ok(())
+    } else {
+        bail!("helper error: {}", resp.error.unwrap_or_default())
+    }
+}
+
+/// Install the pia-vpn systemd backend service via the privileged helper.
+/// Writes all required files under /etc/vex-vpn/ and /etc/systemd/system/.
+pub async fn install_backend(pia_user: &str, pia_pass: &str) -> Result<()> {
+    let resp = call_helper(&HelperRequest {
+        op: "install_backend",
+        interface: None,
+        allowed_interfaces: None,
+        pia_user: Some(pia_user),
+        pia_pass: Some(pia_pass),
+    })
+    .await?;
+    if resp.ok {
+        Ok(())
+    } else {
+        bail!("helper error: {}", resp.error.unwrap_or_default())
+    }
+}
+
+/// Remove the pia-vpn systemd backend service.
+pub async fn uninstall_backend() -> Result<()> {
+    let resp = call_helper(&HelperRequest {
+        op: "uninstall_backend",
+        interface: None,
+        allowed_interfaces: None,
+        pia_user: None,
+        pia_pass: None,
     })
     .await?;
     if resp.ok {

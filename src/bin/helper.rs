@@ -325,12 +325,15 @@ fn is_valid_interface(name: &str) -> bool {
 }
 
 fn nft_binary() -> &'static str {
-    // NixOS places nft here; /usr/sbin/nft is the FHS fallback.
+    // NixOS system profile (preferred).
     if std::path::Path::new("/run/current-system/sw/bin/nft").exists() {
-        "/run/current-system/sw/bin/nft"
-    } else {
-        "/usr/sbin/nft"
+        return "/run/current-system/sw/bin/nft";
     }
+    // Debian/Ubuntu place nft in /usr/sbin; some distros use /usr/bin.
+    if std::path::Path::new("/usr/bin/nft").exists() {
+        return "/usr/bin/nft";
+    }
+    "/usr/sbin/nft"
 }
 
 fn run_nft_enable(iface: &str, extra_ifaces: &[String]) -> Response {

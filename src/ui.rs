@@ -135,6 +135,8 @@ struct LiveWidgets {
     port_forward_sw: gtk4::Switch,
     kill_switch_updating: std::rc::Rc<std::cell::Cell<bool>>,
     port_forward_updating: std::rc::Rc<std::cell::Cell<bool>>,
+    kill_switch_row: adw::ActionRow,
+    port_forward_row: adw::ActionRow,
     server_row: adw::ActionRow,
     dns_banner: adw::Banner,
 }
@@ -258,8 +260,10 @@ pub fn build_ui(
         });
     }
 
-    // Clone connect_btn before it is moved into the timeout closure below.
+    // Clone widget handles before live is moved into the timeout closure below.
     let startup_connect_btn = live.connect_btn.clone();
+    let startup_ks_row = live.kill_switch_row.clone();
+    let startup_pf_row = live.port_forward_row.clone();
 
     // Refresh UI every 3 seconds from the poll loop state.
     glib::timeout_add_seconds_local(3, move || {
@@ -279,6 +283,8 @@ pub fn build_ui(
             port_forward_sw: live.port_forward_sw.clone(),
             kill_switch_updating: live.kill_switch_updating.clone(),
             port_forward_updating: live.port_forward_updating.clone(),
+            kill_switch_row: live.kill_switch_row.clone(),
+            port_forward_row: live.port_forward_row.clone(),
             server_row: live.server_row.clone(),
             dns_banner: live.dns_banner.clone(),
         };
@@ -300,6 +306,30 @@ pub fn build_ui(
             if !crate::dbus::is_service_unit_installed("pia-vpn.service").await {
                 connect_btn_ref.set_sensitive(false);
                 show_service_install_dialog(&window_ref, &toasts_ref, &connect_btn_ref).await;
+            }
+        });
+    }
+
+    // Startup check: disable feature toggles when capabilities are absent.
+    {
+        let ks_row_ref = startup_ks_row;
+        let pf_row_ref = startup_pf_row;
+        glib::spawn_future_local(async move {
+            // Probe nft synchronously — it's a fast stat/exec, not network I/O.
+            let nft_ok = std::process::Command::new("nft")
+                .arg("--version")
+                .output()
+                .is_ok();
+            if !nft_ok {
+                ks_row_ref.set_sensitive(false);
+                ks_row_ref.set_tooltip_text(Some(
+                    "Kill switch requires nftables — not available in this environment",
+                ));
+            }
+            let pf_ok = crate::dbus::is_service_unit_installed("pia-vpn-portforward.service").await;
+            if !pf_ok {
+                pf_row_ref.set_sensitive(false);
+                pf_row_ref.set_tooltip_text(Some("Port forwarding requires the NixOS VPN module"));
             }
         });
     }
@@ -771,7 +801,11 @@ fn build_main_page(
 
     // Kill switch
     let kill_switch_updating = std::rc::Rc::new(std::cell::Cell::new(false));
-    let kill_switch_sw = {
+    // OnceCell lets the toggle closure revert the switch widget on error, even
+    // though the switch is created inside make_toggle_row (after the closure).
+    let ks_sw_cell: std::rc::Rc<std::cell::OnceCell<gtk4::Switch>> = Default::default();
+    let ks_sw_cell_c = ks_sw_cell.clone();
+    let (kill_switch_row, kill_switch_sw) = {
         let state_c = state.clone();
         let guard = kill_switch_updating.clone();
         let toasts_ks = toasts.clone();
@@ -786,6 +820,7 @@ fn build_main_page(
                 }
                 let state = state_c.clone();
                 let toasts = toasts_ks.clone();
+                let sw_ref = ks_sw_cell_c.get().cloned();
                 glib::spawn_future_local(async move {
                     let iface = state.read().await.interface.clone();
                     let res = if active {
@@ -798,20 +833,28 @@ fn build_main_page(
                             state.write().await.kill_switch_enabled = active;
                         }
                         Err(e) => {
-                            tracing::error!("kill switch toggle: {}", e);
-                            toasts.add_toast(adw::Toast::new(&format!("Kill switch error: {e:#}")));
+                            tracing::warn!("kill switch toggle: {}", e);
+                            if let Some(sw) = &sw_ref {
+                                sw.set_active(!active);
+                            }
+                            toasts.add_toast(adw::Toast::new(
+                                "Kill switch unavailable: nftables not found",
+                            ));
                         }
                     }
                 });
             },
         );
         feats.append(&row);
-        sw
+        (row, sw)
     };
+    let _ = ks_sw_cell.set(kill_switch_sw.clone());
 
     // Port forwarding
     let port_forward_updating = std::rc::Rc::new(std::cell::Cell::new(false));
-    let port_forward_sw = {
+    let pf_sw_cell: std::rc::Rc<std::cell::OnceCell<gtk4::Switch>> = Default::default();
+    let pf_sw_cell_c = pf_sw_cell.clone();
+    let (port_forward_row, port_forward_sw) = {
         let guard = port_forward_updating.clone();
         let toasts_pf = toasts.clone();
         let (row, sw) = make_toggle_row(
@@ -824,6 +867,7 @@ fn build_main_page(
                     return;
                 }
                 let toasts = toasts_pf.clone();
+                let sw_ref = pf_sw_cell_c.get().cloned();
                 glib::spawn_future_local(async move {
                     let res = if active {
                         crate::dbus::enable_port_forward().await
@@ -831,15 +875,24 @@ fn build_main_page(
                         crate::dbus::disable_port_forward().await
                     };
                     if let Err(e) = res {
-                        tracing::error!("port forward toggle: {}", e);
-                        toasts.add_toast(adw::Toast::new(&format!("Port forwarding error: {e:#}")));
+                        let msg = if e.to_string().contains("NoSuchUnit") {
+                            "Port forwarding requires the NixOS VPN module".to_string()
+                        } else {
+                            format!("Port forward failed: {e}")
+                        };
+                        tracing::warn!("port forward toggle: {}", e);
+                        if let Some(sw) = &sw_ref {
+                            sw.set_active(!active);
+                        }
+                        toasts.add_toast(adw::Toast::new(&msg));
                     }
                 });
             },
         );
         feats.append(&row);
-        sw
+        (row, sw)
     };
+    let _ = pf_sw_cell.set(port_forward_sw.clone());
 
     // Auto connect — persisted via config.toml
     {
@@ -879,6 +932,8 @@ fn build_main_page(
         port_forward_sw,
         kill_switch_updating,
         port_forward_updating,
+        kill_switch_row,
+        port_forward_row,
         server_row,
         dns_banner,
     };

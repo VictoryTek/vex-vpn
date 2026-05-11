@@ -14,6 +14,8 @@
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -39,8 +41,21 @@ pub fn show_onboarding(
         .deletable(false)
         .build();
 
-    // Prevent closing via Escape / close button.
-    win.connect_close_request(|_| glib::Propagation::Stop);
+    // Prevent closing via Escape / close button during the wizard.
+    // `completing` is set to true by the "Start browsing" handler so that
+    // the programmatic win.close() call is allowed through while all
+    // user-initiated close attempts (Escape, compositor close) are blocked.
+    let completing = Rc::new(Cell::new(false));
+    {
+        let completing_c = completing.clone();
+        win.connect_close_request(move |_| {
+            if completing_c.get() {
+                glib::Propagation::Proceed
+            } else {
+                glib::Propagation::Stop
+            }
+        });
+    }
 
     let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
 
@@ -252,7 +267,10 @@ pub fn show_onboarding(
                     scroll_to_next(&carousel_c, page_idx, n_pages);
                 }
                 4 => {
-                    // Done: close wizard, present main window
+                    // Done: close wizard, present main window.
+                    // Unlock the close-request guard before calling close() so
+                    // the programmatic close is not intercepted and blocked.
+                    completing.set(true);
                     win_c.close();
                     (on_complete)();
                 }

@@ -105,6 +105,17 @@ fn main() -> Result<()> {
 
     let state_for_ui = app_state.clone();
     app.connect_activate(move |app| {
+        // Guard: if any window already exists, just raise it instead of
+        // rebuilding the UI. This prevents duplicate windows when the app is
+        // re-activated (e.g., user clicks the launcher while already running,
+        // or the GNOME session manager re-activates the app on login).
+        if !app.windows().is_empty() {
+            if let Some(win) = app.active_window() {
+                win.present();
+            }
+            return;
+        }
+
         // Register the bundled icon resource path with the default icon theme
         // so that GTK can find our fallback symbolic icons.
         if let Some(display) = gtk4::gdk::Display::default() {

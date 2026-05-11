@@ -4,4 +4,4 @@
 flake.lock
 
 # Local UI screenshots used during development
-/screenshots/
+.github/screenshots/

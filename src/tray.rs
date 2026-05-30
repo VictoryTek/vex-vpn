@@ -18,20 +18,20 @@ pub enum TrayMessage {
 // threads rather than a stranded single-threaded runtime.
 // ---------------------------------------------------------------------------
 
-struct PiaTray {
+struct VexTray {
     state: Arc<RwLock<AppState>>,
     handle: tokio::runtime::Handle,
     tx: async_channel::Sender<TrayMessage>,
 }
 
-impl PiaTray {
+impl VexTray {
     fn read_state(&self) -> AppState {
         self.handle
             .block_on(async { self.state.read().await.clone() })
     }
 }
 
-impl Tray for PiaTray {
+impl Tray for VexTray {
     fn id(&self) -> String {
         "vex-vpn".to_string()
     }
@@ -40,12 +40,11 @@ impl Tray for PiaTray {
         let s = self.read_state();
         match &s.status {
             ConnectionStatus::Connected => s
-                .region
-                .as_ref()
-                .map(|r| format!("PIA — {}", r.name))
-                .unwrap_or_else(|| "PIA — Connected".to_string()),
-            ConnectionStatus::Stale(_) => "PIA — Reconnecting…".to_string(),
-            other => format!("PIA — {}", other.label()),
+                .active_profile()
+                .map(|p| format!("vex-vpn — {}", p.name))
+                .unwrap_or_else(|| "vex-vpn — Connected".to_string()),
+            ConnectionStatus::Stale(_) => "vex-vpn — Reconnecting\u{2026}".to_string(),
+            other => format!("vex-vpn — {}", other.label()),
         }
     }
 
@@ -65,11 +64,15 @@ impl Tray for PiaTray {
         let s = self.read_state();
         let is_connected = s.status.is_connected();
         let is_connecting = matches!(s.status, ConnectionStatus::Connecting);
+        let profile_iface = s
+            .active_profile()
+            .map(|p| p.effective_interface().to_string())
+            .unwrap_or_else(|| "wg0".to_string());
 
         vec![
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
-                label: "Open PIA".to_string(),
-                activate: Box::new(|tray: &mut PiaTray| {
+                label: "Open vex-vpn".to_string(),
+                activate: Box::new(|tray: &mut VexTray| {
                     let _ = tray.tx.try_send(TrayMessage::ShowWindow);
                 }),
                 ..Default::default()
@@ -81,16 +84,17 @@ impl Tray for PiaTray {
                 } else {
                     "Connect".to_string()
                 },
-                activate: Box::new(move |tray: &mut PiaTray| {
+                activate: Box::new(move |tray: &mut VexTray| {
+                    let iface = profile_iface.clone();
                     if is_connected || is_connecting {
-                        tray.handle.spawn(async {
-                            if let Err(e) = crate::dbus::disconnect_vpn().await {
+                        tray.handle.spawn(async move {
+                            if let Err(e) = crate::dbus::stop_wireguard_unit(&iface).await {
                                 tracing::error!("disconnect failed: {}", e);
                             }
                         });
                     } else {
-                        tray.handle.spawn(async {
-                            if let Err(e) = crate::dbus::connect_vpn().await {
+                        tray.handle.spawn(async move {
+                            if let Err(e) = crate::dbus::start_wireguard_unit(&iface).await {
                                 tracing::error!("connect failed: {}", e);
                             }
                         });
@@ -101,7 +105,7 @@ impl Tray for PiaTray {
             ksni::MenuItem::Separator,
             ksni::MenuItem::Standard(ksni::menu::StandardItem {
                 label: "Quit".to_string(),
-                activate: Box::new(|tray: &mut PiaTray| {
+                activate: Box::new(|tray: &mut VexTray| {
                     let _ = tray.tx.try_send(TrayMessage::Quit);
                 }),
                 ..Default::default()
@@ -116,20 +120,16 @@ pub fn run_tray(
     handle: tokio::runtime::Handle,
     mut state_change_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
-    let tray = PiaTray {
+    let tray = VexTray {
         state,
         handle: handle.clone(),
         tx,
     };
 
-    // ksni 0.2.x TrayService::spawn() returns () — there is no handle to call update() on.
-    // The tray reads AppState live via read_state() on every menu open, so status changes
-    // are always reflected. We still drain the broadcast receiver so the sender never blocks.
     ksni::TrayService::new(tray).spawn();
 
     handle.block_on(async move {
         use tokio::sync::broadcast::error::RecvError;
-        // Drain broadcast signals — tray reads state live on menu open, so no action needed.
         while let Ok(()) | Err(RecvError::Lagged(_)) = state_change_rx.recv().await {}
     });
 }

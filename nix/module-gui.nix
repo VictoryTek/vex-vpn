@@ -1,21 +1,17 @@
-# GUI module for vex-vpn — GTK4/Rust frontend for the pia-vpn WireGuard service.
+# GUI module for vex-vpn — GTK4/Rust universal VPN client.
 # This module is designed to be used alongside nix/module-vpn.nix (or via the
 # combined nixosModules.default which imports both).
 { config, lib, pkgs, self, ... }:
 
 let
   cfg = config.services.vex-vpn;
-  # vpnCfg is only referenced inside mkIf cfg.enable blocks so it is safe even if
-  # services.pia-vpn is not in scope (standalone vex-vpn usage gets caught by the
-  # assertion below).
-  vpnCfg = config.services.pia-vpn;
 in
 
 with lib;
 
 {
   options.services.vex-vpn = {
-    enable = mkEnableOption "vex-vpn GUI — GTK4/Rust frontend for the pia-vpn WireGuard service";
+    enable = mkEnableOption "vex-vpn GUI — GTK4/Rust universal VPN client";
 
     package = mkOption {
       type = types.package;
@@ -35,6 +31,15 @@ with lib;
     killSwitch = {
       enable = mkEnableOption "network kill switch — block all traffic if VPN tunnel drops";
 
+      vpnInterface = mkOption {
+        type = types.str;
+        default = "wg0";
+        description = ''
+          The VPN interface to allow through the kill switch (e.g. "wg0" for
+          WireGuard or the tun interface name for OpenVPN).
+        '';
+      };
+
       allowedInterfaces = mkOption {
         type = types.listOf types.str;
         default = [ "lo" ];
@@ -50,42 +55,13 @@ with lib;
         default = [];
         description = ''
           IP addresses or CIDR ranges to always allow, even with the kill switch active.
-          Useful for allowing the WireGuard handshake endpoint through.
+          Useful for allowing the VPN handshake endpoint through.
         '';
-      };
-    };
-
-    dns = {
-      provider = mkOption {
-        type = types.enum [ "pia" "google" "cloudflare" "custom" ];
-        default = "pia";
-        description = ''
-          DNS provider to use when the VPN is connected.
-          "pia" uses PIA's own DNS (10.0.0.241), which is the recommended default.
-        '';
-      };
-
-      customServers = mkOption {
-        type = types.listOf types.str;
-        default = [];
-        description = "Custom DNS servers to use when provider is set to 'custom'.";
       };
     };
   };
 
   config = mkIf cfg.enable {
-
-    # Guard: if this module is imported without the VPN module, give a clear error.
-    assertions = [
-      {
-        assertion = config.services.pia-vpn.enable or false;
-        message = ''
-          services.vex-vpn requires services.pia-vpn to be enabled.
-          Use nixosModules.default (which includes both) or add nixosModules.pia-vpn
-          to your imports and set services.pia-vpn.enable = true.
-        '';
-      }
-    ];
 
     # Install the GUI package system-wide.
     environment.systemPackages = [ cfg.package ];
@@ -93,28 +69,14 @@ with lib;
     # Expose /libexec so pkexec can find vex-vpn-helper via the system profile.
     environment.pathsToLink = [ "/libexec" ];
 
-    # Wire the GUI's dns.provider choice into the VPN module's dnsServers option.
-    # Wrapped in lib.mkDefault so a user's explicit dnsServers assignment takes
-    # precedence without a NixOS merge conflict.
-    services.pia-vpn.dnsServers = lib.mkDefault (
-      {
-        pia        = [ "10.0.0.241" "10.0.0.242" ];
-        google     = [ "8.8.8.8" "8.8.4.4" ];
-        cloudflare = [ "1.1.1.1" "1.0.0.1" ];
-        custom     = cfg.dns.customServers;
-      }.${cfg.dns.provider}
-    );
-
     # Kill switch via nftables (declarative ruleset, separate from the runtime toggle).
     networking.nftables.enable = mkIf cfg.killSwitch.enable true;
 
-    networking.nftables.tables.pia_kill_switch = mkIf cfg.killSwitch.enable {
+    networking.nftables.tables.vex_kill_switch = mkIf cfg.killSwitch.enable {
       family = "inet";
       content =
         let
-          # Wire interface directly from vpn module config.
-          iface = vpnCfg.interface;
-          allowedIfaces = [ iface ] ++ cfg.killSwitch.allowedInterfaces;
+          allowedIfaces = [ cfg.killSwitch.vpnInterface ] ++ cfg.killSwitch.allowedInterfaces;
           ifaceRules = concatMapStrings
             (i: "    oifname \"${i}\" accept\n    iifname \"${i}\" accept\n")
             allowedIfaces;
@@ -150,15 +112,13 @@ with lib;
       };
     };
 
-    # Policy-kit rule so the GUI can control pia-vpn.service without sudo.
+    # Polkit rule: allow members of 'wheel' group to manage vex-vpn systemd units
+    # without a password prompt.
     security.polkit.extraConfig = ''
       polkit.addRule(function(action, subject) {
         if (
           action.id == "org.freedesktop.systemd1.manage-units" &&
-          action.lookup("unit") in [
-            "pia-vpn.service",
-            "pia-vpn-portforward.service"
-          ] &&
+          action.lookup("unit") == "vex-vpn.service" &&
           subject.isInGroup("wheel")
         ) {
           return polkit.Result.YES;

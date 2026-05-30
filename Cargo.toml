@@ -2,7 +2,7 @@
 name = "vex-vpn"
 version = "0.1.0"
 edition = "2021"
-description = "VPN GUI for NixOS — WireGuard/PIA backend via systemd"
+description = "Universal VPN GUI for NixOS — WireGuard and OpenVPN via systemd/NetworkManager"
 license = "MIT"
 
 [[bin]]
@@ -31,18 +31,12 @@ tokio = { version = "1", features = ["full"] }
 # D-Bus — zbus 3.x is compatible with Rust 1.75
 zbus = { version = "3", features = ["tokio"] }
 
-# JSON parsing (PIA state files)
+# JSON parsing (state files and history)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Base64 decode for port-forward payload
-base64 = "0.21"
-
 # System tray (KStatusNotifierItem)
 ksni = "0.2"
-
-# HTTP client for PIA API — rustls to avoid OpenSSL runtime dependency
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 
 # Error handling
 anyhow = "1"
@@ -67,9 +61,16 @@ async-channel = "2"
 # Stream utilities needed for zbus signal iteration (B3, F7)
 futures-util = "0.3"
 
+# WireGuard INI .conf parsing
+configparser = "3"
+
+# Profile UUID generation
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Async trait support for VpnBackend trait
+async-trait = "0.1"
+
 [dev-dependencies]
-# HTTP mocking for PIA API integration tests
-wiremock = "0.6"
 # Temporary directory creation for isolation in integration tests
 tempfile = "3"
 
@@ -79,5 +80,5 @@ glib-build-tools = "0.18"
 [profile.release]
 opt-level = 3
 lto = true
-codegen-units = 1
 strip = true
+codegen-units = 1

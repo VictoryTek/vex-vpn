@@ -1,5 +1,5 @@
 {
-  description = "PIA VPN GUI for NixOS — Rust/GTK4 frontend for the WireGuard-based PIA systemd service";
+  description = "Universal VPN GUI for NixOS — GTK4/Rust frontend for WireGuard and OpenVPN via systemd/NetworkManager";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -17,11 +17,10 @@
   outputs = { self, nixpkgs, flake-utils, rust-overlay, crane }:
     let
       # ── NixOS modules ───────────────────────────────────────────────────────
-      # pia-vpn backend: the WireGuard/systemd service (vendored from tadfisher/flake,
-      # with DNS and iproute2 fixes). Can be used standalone without the GUI.
+      # vpn backend: universal WireGuard/OpenVPN module. Can be used standalone without the GUI.
       vpnModule = ./nix/module-vpn.nix;
 
-      # vex-vpn frontend: the GTK4/Rust GUI. Requires pia-vpn to be enabled.
+      # vex-vpn frontend: the GTK4/Rust GUI.
       guiModule = { config, lib, pkgs, ... }:
         import ./nix/module-gui.nix { inherit config lib pkgs self; };
 
@@ -87,7 +86,12 @@
         };
 
         # Build dependencies separately for faster rebuilds (Crane pattern)
+        # pname/version here are used only to name the Nix store path for this
+        # derivation; bumping the version forces a fresh rebuild when new source
+        # modules are added (e.g. src/backend/, src/parser/, src/profile.rs).
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          pname = "vex-vpn-deps";
+          version = "0.2.0";
           preBuild = ''
             export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
           '';
@@ -102,10 +106,6 @@
           '';
 
           postInstall = ''
-            # PIA CA certificate for NixOS module
-            mkdir -p $out/share/pia
-            cp assets/ca.rsa.4096.crt $out/share/pia/
-
             # Helper binary (polkit-gated nft operations, runs as root)
             mkdir -p $out/libexec
             cp target/release/vex-vpn-helper $out/libexec/vex-vpn-helper
@@ -132,8 +132,8 @@
             cat > $out/share/applications/vex-vpn.desktop << EOF
             [Desktop Entry]
             Type=Application
-            Name=Private Internet Access
-            Comment=PIA VPN client for NixOS
+            Name=vex-vpn
+            Comment=Universal VPN client for NixOS
             Exec=vex-vpn
             Icon=network-vpn
             Categories=Network;VPN;
@@ -144,7 +144,7 @@
             mkdir -p $out/lib/systemd/user
             cat > $out/lib/systemd/user/vex-vpn.service << EOF
             [Unit]
-            Description=PIA VPN GUI
+            Description=vex-vpn Universal VPN GUI
             After=graphical-session.target
 
             [Service]
@@ -192,11 +192,11 @@
     ) // {
       # ── NixOS modules (system-independent) ──────────────────────────────────
       # Most users: import nixosModules.default — gets both vpn backend + gui.
-      # Advanced:   import nixosModules.pia-vpn alone (headless/server use).
-      #             import nixosModules.vex-vpn alone (if you manage pia-vpn separately).
+      # Advanced:   import nixosModules.vpn alone (headless/server use).
+      #             import nixosModules.vex-vpn alone (if you manage vpn separately).
       nixosModules = {
         default  = combinedModule;
-        pia-vpn  = vpnModule;
+        vpn      = vpnModule;
         vex-vpn  = guiModule;
       };
     };

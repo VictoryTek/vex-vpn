@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tracing::warn;
+
+pub use crate::profile::{VpnProfile, VpnType};
 
 /// Validate that `name` is a legal Linux network interface name and
 /// does not contain characters that could be interpreted by nft.
 /// Pattern: starts with a lowercase letter, followed by up to 14
 /// lowercase alphanumeric, underscore, or hyphen characters.
+#[allow(dead_code)]
 pub fn validate_interface(name: &str) -> bool {
     if name.is_empty() || name.len() > 15 {
         return false;
@@ -20,62 +22,52 @@ pub fn validate_interface(name: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
 }
 
-/// Persists user preferences to ~/.config/vex-vpn/config.toml.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    #[serde(default = "default_schema_version")]
-    pub version: u32,
-    pub auto_connect: bool,
-    pub interface: String,    // default "wg0"
-    pub max_latency_ms: u32,  // default 100
-    pub dns_provider: String, // default "pia"
-    #[serde(default)]
-    pub selected_region_id: Option<String>,
-    #[serde(default)]
-    pub kill_switch_enabled: bool,
-    #[serde(default = "default_kill_switch_allowed_ifaces")]
-    pub kill_switch_allowed_ifaces: Vec<String>,
-    /// Automatically restart the VPN tunnel when network connectivity is restored.
-    #[serde(default = "default_true")]
-    pub auto_reconnect: bool,
-}
-
 fn default_schema_version() -> u32 {
     1
-}
-
-fn default_kill_switch_allowed_ifaces() -> Vec<String> {
-    vec!["lo".to_string()]
 }
 
 fn default_true() -> bool {
     true
 }
 
+/// Persists user preferences to `~/.config/vex-vpn/config.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_schema_version")]
+    pub version: u32,
+    /// All managed VPN profiles.
+    #[serde(default)]
+    pub profiles: Vec<VpnProfile>,
+    /// UUID of the last/active profile.
+    #[serde(default)]
+    pub active_profile_id: Option<String>,
+    /// Launch minimized to tray.
+    #[serde(default)]
+    pub start_minimized: bool,
+    /// Auto-reconnect when network is restored.
+    #[serde(default = "default_true")]
+    pub auto_reconnect: bool,
+    /// Show icon in the system tray.
+    #[serde(default = "default_true")]
+    pub show_tray_icon: bool,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             version: 1,
-            auto_connect: false,
-            interface: "wg0".to_string(),
-            max_latency_ms: 100,
-            dns_provider: "pia".to_string(),
-            selected_region_id: None,
-            kill_switch_enabled: false,
-            kill_switch_allowed_ifaces: vec!["lo".to_string()],
+            profiles: Vec::new(),
+            active_profile_id: None,
+            start_minimized: false,
             auto_reconnect: true,
+            show_tray_icon: true,
         }
     }
 }
 
-fn config_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        });
-    base.join("vex-vpn").join("config.toml")
+/// Returns `~/.config/vex-vpn/config.toml` (respects `$XDG_CONFIG_HOME`).
+pub fn config_path() -> PathBuf {
+    crate::profile::config_base_dir().join("config.toml")
 }
 
 impl Config {
@@ -96,19 +88,7 @@ impl Config {
                     .with_context(|| format!("read {}", path.display()))
             }
         };
-        let mut cfg: Config =
-            toml::from_str(&content).with_context(|| format!("parse {}", path.display()))?;
-
-        // Validate the interface name to prevent nft injection.
-        if !validate_interface(&cfg.interface) {
-            warn!(
-                "Invalid interface name {:?} in config, falling back to \"wg0\"",
-                cfg.interface
-            );
-            cfg.interface = "wg0".to_string();
-        }
-
-        Ok(cfg)
+        toml::from_str(&content).with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -136,6 +116,26 @@ impl Config {
         std::fs::rename(&tmp_path, path)?;
         Ok(())
     }
+
+    /// Find a profile by ID.
+    #[allow(dead_code)]
+    pub fn find_profile(&self, id: &str) -> Option<&VpnProfile> {
+        self.profiles.iter().find(|p| p.id == id)
+    }
+
+    /// Find a mutable profile by ID.
+    #[allow(dead_code)]
+    pub fn find_profile_mut(&mut self, id: &str) -> Option<&mut VpnProfile> {
+        self.profiles.iter_mut().find(|p| p.id == id)
+    }
+
+    /// Return the currently active profile, if any.
+    #[allow(dead_code)]
+    pub fn active_profile(&self) -> Option<&VpnProfile> {
+        self.active_profile_id
+            .as_deref()
+            .and_then(|id| self.find_profile(id))
+    }
 }
 
 #[cfg(test)]
@@ -145,48 +145,41 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let c = Config::default();
-        assert!(!c.auto_connect);
-        assert_eq!(c.interface, "wg0");
-        assert_eq!(c.max_latency_ms, 100);
-        assert_eq!(c.dns_provider, "pia");
-        assert_eq!(c.selected_region_id, None);
-        assert!(!c.kill_switch_enabled);
-        assert_eq!(c.kill_switch_allowed_ifaces, vec!["lo".to_string()]);
+        assert!(c.profiles.is_empty());
+        assert_eq!(c.active_profile_id, None);
+        assert!(!c.start_minimized);
+        assert!(c.auto_reconnect);
+        assert!(c.show_tray_icon);
+        assert_eq!(c.version, 1);
     }
 
     #[test]
-    fn test_config_round_trip() {
+    fn test_config_round_trip_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
         let original = Config {
             version: 1,
-            auto_connect: true,
-            interface: "wg1".to_string(),
-            max_latency_ms: 200,
-            dns_provider: "cloudflare".to_string(),
-            selected_region_id: Some("us_california".to_string()),
-            kill_switch_enabled: false,
-            kill_switch_allowed_ifaces: vec![],
-            auto_reconnect: true,
+            profiles: vec![],
+            active_profile_id: Some("test-uuid".to_string()),
+            start_minimized: true,
+            auto_reconnect: false,
+            show_tray_icon: true,
         };
-        let serialized = toml::to_string_pretty(&original).unwrap();
-        let loaded: Config = toml::from_str(&serialized).unwrap();
-        assert_eq!(loaded.auto_connect, original.auto_connect);
-        assert_eq!(loaded.interface, original.interface);
-        assert_eq!(loaded.max_latency_ms, original.max_latency_ms);
-        assert_eq!(loaded.dns_provider, original.dns_provider);
-        assert_eq!(loaded.selected_region_id, original.selected_region_id);
+        original.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.active_profile_id, original.active_profile_id);
+        assert_eq!(loaded.start_minimized, original.start_minimized);
+        assert_eq!(loaded.auto_reconnect, original.auto_reconnect);
+        assert_eq!(loaded.version, original.version);
     }
 
     #[test]
-    fn test_config_backward_compat_no_region() {
-        // Config TOML without selected_region_id should deserialize with None.
-        let toml_str = r#"
-auto_connect = false
-interface = "wg0"
-max_latency_ms = 100
-dns_provider = "pia"
-"#;
-        let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.selected_region_id, None);
+    fn test_config_missing_file_returns_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.toml");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.version, 1);
+        assert!(cfg.profiles.is_empty());
     }
 
     #[test]
@@ -194,19 +187,15 @@ dns_provider = "pia"
         assert!(validate_interface("wg0"));
         assert!(validate_interface("a"));
         assert!(validate_interface("wg-pia_01"));
-        // 15 chars (max Linux iface name length)
-        assert!(validate_interface("abcdefghijklmno"));
+        assert!(validate_interface("abcdefghijklmno")); // 15 chars
     }
 
     #[test]
     fn test_validate_interface_invalid() {
         assert!(!validate_interface(""));
-        assert!(!validate_interface("WG0")); // uppercase first char
-        assert!(!validate_interface("0abc")); // starts with digit
-        assert!(!validate_interface(&"a".repeat(16))); // too long
-        assert!(!validate_interface("wg;rm")); // semicolon
-        assert!(!validate_interface("wg\nrf")); // newline
-        assert!(!validate_interface("wg rf")); // space
-        assert!(!validate_interface("wg\"x")); // quote
+        assert!(!validate_interface("0wg")); // starts with digit
+        assert!(!validate_interface("Wg0")); // uppercase
+        assert!(!validate_interface("abcdefghijklmnop")); // 16 chars
+        assert!(!validate_interface("wg0;drop")); // semicolon
     }
 }

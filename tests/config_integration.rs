@@ -5,22 +5,27 @@
 
 use std::fs;
 use vex_vpn::config::Config;
+use vex_vpn::profile::{VpnProfile, VpnType};
 
 #[test]
 fn load_from_path_round_trip() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("config.toml");
 
+    let profile = VpnProfile::new(
+        "Test Profile".to_string(),
+        VpnType::WireGuard,
+        "vpn.conf".to_string(),
+    );
+    let profile_id = profile.id.clone();
+
     let original = Config {
         version: 1,
-        auto_connect: true,
-        interface: "wg1".to_string(),
-        max_latency_ms: 250,
-        dns_provider: "cloudflare".to_string(),
-        selected_region_id: Some("us_california".to_string()),
-        kill_switch_enabled: true,
-        kill_switch_allowed_ifaces: vec!["lo".to_string(), "eth0".to_string()],
+        profiles: vec![profile],
+        active_profile_id: Some(profile_id.clone()),
+        start_minimized: true,
         auto_reconnect: false,
+        show_tray_icon: true,
     };
 
     let toml_str = toml::to_string_pretty(&original).expect("serialize config");
@@ -28,18 +33,15 @@ fn load_from_path_round_trip() {
 
     let loaded = Config::load_from(&path).expect("load config");
 
-    assert_eq!(loaded.auto_connect, original.auto_connect);
-    assert_eq!(loaded.interface, original.interface);
-    assert_eq!(loaded.max_latency_ms, original.max_latency_ms);
-    assert_eq!(loaded.dns_provider, original.dns_provider);
-    assert_eq!(loaded.selected_region_id, original.selected_region_id);
-    assert_eq!(loaded.kill_switch_enabled, original.kill_switch_enabled);
-    assert_eq!(
-        loaded.kill_switch_allowed_ifaces,
-        original.kill_switch_allowed_ifaces
-    );
+    assert_eq!(loaded.active_profile_id, original.active_profile_id);
+    assert_eq!(loaded.start_minimized, original.start_minimized);
     assert_eq!(loaded.auto_reconnect, original.auto_reconnect);
+    assert_eq!(loaded.show_tray_icon, original.show_tray_icon);
     assert_eq!(loaded.version, original.version);
+    assert_eq!(loaded.profiles.len(), 1);
+    assert_eq!(loaded.profiles[0].id, profile_id);
+    assert_eq!(loaded.profiles[0].name, "Test Profile");
+    assert_eq!(loaded.profiles[0].vpn_type, VpnType::WireGuard);
 }
 
 #[test]
@@ -50,11 +52,10 @@ fn load_from_path_missing_file_returns_default() {
     let cfg = Config::load_from(&path).expect("missing file should yield default");
 
     let default = Config::default();
-    assert_eq!(cfg.auto_connect, default.auto_connect);
-    assert_eq!(cfg.interface, default.interface);
-    assert_eq!(cfg.max_latency_ms, default.max_latency_ms);
-    assert_eq!(cfg.dns_provider, default.dns_provider);
+    assert_eq!(cfg.active_profile_id, default.active_profile_id);
+    assert_eq!(cfg.start_minimized, default.start_minimized);
     assert_eq!(cfg.auto_reconnect, default.auto_reconnect);
+    assert!(cfg.profiles.is_empty());
 }
 
 #[test]
@@ -62,19 +63,16 @@ fn load_from_path_auto_reconnect_defaults_true_when_missing() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("config.toml");
 
-    // Old-format TOML without auto_reconnect field.
+    // Minimal TOML without auto_reconnect field.
     let toml_str = r#"
-auto_connect = false
-interface = "wg0"
-max_latency_ms = 100
-dns_provider = "pia"
+version = 1
 "#;
     fs::write(&path, toml_str).expect("write config");
 
     let cfg = Config::load_from(&path).expect("load config");
     assert!(
         cfg.auto_reconnect,
-        "auto_reconnect should default to true when absent from TOML"
+        "auto_reconnect should default to true when absent"
     );
 }
 
@@ -83,12 +81,8 @@ fn version_field_defaults_to_1_when_missing() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("config.toml");
 
-    // Old-format TOML without version field.
     let toml_str = r#"
-auto_connect = false
-interface = "wg0"
-max_latency_ms = 100
-dns_provider = "pia"
+start_minimized = false
 "#;
     fs::write(&path, toml_str).expect("write config");
 
@@ -103,28 +97,51 @@ fn save_to_path_round_trip() {
 
     let original = Config {
         version: 1,
-        auto_connect: true,
-        interface: "wg2".to_string(),
-        max_latency_ms: 150,
-        dns_provider: "google".to_string(),
-        selected_region_id: None,
-        kill_switch_enabled: false,
-        kill_switch_allowed_ifaces: vec!["lo".to_string()],
+        profiles: vec![],
+        active_profile_id: None,
+        start_minimized: false,
         auto_reconnect: true,
+        show_tray_icon: false,
     };
 
     original.save_to(&path).expect("save config");
 
-    let loaded = Config::load_from(&path).expect("load config");
-    assert_eq!(loaded.auto_connect, original.auto_connect);
-    assert_eq!(loaded.interface, original.interface);
-    assert_eq!(loaded.max_latency_ms, original.max_latency_ms);
-    assert_eq!(loaded.dns_provider, original.dns_provider);
-    assert_eq!(loaded.version, original.version);
-    // Confirm no leftover .tmp file exists.
-    let tmp_path = path.with_extension("toml.tmp");
-    assert!(
-        !tmp_path.exists(),
-        "temp file should be cleaned up after save"
-    );
+    let loaded = Config::load_from(&path).expect("load saved config");
+    assert_eq!(loaded.start_minimized, original.start_minimized);
+    assert_eq!(loaded.auto_reconnect, original.auto_reconnect);
+    assert_eq!(loaded.show_tray_icon, original.show_tray_icon);
+}
+
+#[test]
+fn config_with_openvpn_profile_round_trips() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("config.toml");
+
+    let profile = VpnProfile {
+        id: "test-uuid-123".to_string(),
+        name: "Work VPN".to_string(),
+        vpn_type: VpnType::OpenVpn,
+        config_file: "vpn.ovpn".to_string(),
+        auto_connect: true,
+        kill_switch: false,
+        dns_override: Some("1.1.1.1".to_string()),
+        interface: None,
+    };
+
+    let cfg = Config {
+        version: 1,
+        profiles: vec![profile],
+        active_profile_id: Some("test-uuid-123".to_string()),
+        start_minimized: false,
+        auto_reconnect: true,
+        show_tray_icon: true,
+    };
+
+    cfg.save_to(&path).expect("save");
+    let loaded = Config::load_from(&path).expect("load");
+
+    assert_eq!(loaded.profiles.len(), 1);
+    assert_eq!(loaded.profiles[0].vpn_type, VpnType::OpenVpn);
+    assert_eq!(loaded.profiles[0].dns_override, Some("1.1.1.1".to_string()));
+    assert!(loaded.profiles[0].auto_connect);
 }

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 pub struct HistoryEntry {
     pub ts_start: u64,
     pub ts_end: u64,
-    pub region: String,
+    pub profile_name: String,
     pub bytes_rx: u64,
     pub bytes_tx: u64,
     pub disconnect_reason: String,
@@ -118,14 +118,14 @@ mod tests {
         let e = HistoryEntry {
             ts_start: 1_700_000_000,
             ts_end: 1_700_000_330,
-            region: "US East".to_string(),
+            profile_name: "My WireGuard".to_string(),
             bytes_rx: 1024,
             bytes_tx: 512,
             disconnect_reason: "user".to_string(),
         };
         let line = serde_json::to_string(&e).unwrap();
         let decoded: HistoryEntry = serde_json::from_str(&line).unwrap();
-        assert_eq!(decoded.region, e.region);
+        assert_eq!(decoded.profile_name, e.profile_name);
         assert_eq!(decoded.bytes_rx, e.bytes_rx);
     }
 

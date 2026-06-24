@@ -211,7 +211,6 @@ pub fn build_profile_detail_page(
         .build();
     {
         let id = profile.id.clone();
-        let profile_iface = profile.effective_interface().to_string();
         ks_row.connect_active_notify(move |row| {
             let active = row.is_active();
             let mut cfg = Config::load().unwrap_or_default();
@@ -219,10 +218,9 @@ pub fn build_profile_detail_page(
                 p.kill_switch = active;
             }
             let _ = cfg.save();
-            let iface = profile_iface.clone();
             glib::spawn_future_local(async move {
                 let res = if active {
-                    crate::helper::apply_kill_switch(&iface).await
+                    crate::helper::apply_kill_switch().await
                 } else {
                     crate::helper::remove_kill_switch().await
                 };

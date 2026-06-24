@@ -207,6 +207,25 @@ pub fn build_ui(
         });
     }
 
+    // Detect whether a system kill switch service is already active and notify.
+    {
+        let state_c = state.clone();
+        let toast_c = toast_overlay.clone();
+        glib::spawn_future_local(async move {
+            let service = state_c.read().await.kill_switch_service_name.clone();
+            let unit = format!("{}.service", service);
+            if let Ok(status) = crate::dbus::get_service_status(&unit).await {
+                if status == "active" {
+                    let toast = adw::Toast::new(
+                        "System kill switch is already active — vex-vpn is deferring to it.",
+                    );
+                    toast.set_timeout(8);
+                    toast_c.add_toast(toast);
+                }
+            }
+        });
+    }
+
     // Refresh UI every 3 seconds.
     glib::timeout_add_seconds_local(3, move || {
         let state = state.clone();

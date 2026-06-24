@@ -76,7 +76,5 @@ in {
     # Users in the "networkmanager" group can manage NM connections
     users.groups.networkmanager.members = mkDefault [];
 
-    # Ensure nftables is available for the kill switch
-    networking.nftables.enable = mkDefault true;
   };
 }

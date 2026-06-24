@@ -159,6 +159,16 @@ pub async fn is_service_unit_installed(service: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Start the kill switch systemd service by unit name (e.g. "vex-vpn-killswitch.service").
+pub async fn start_kill_switch_unit(name: &str) -> Result<()> {
+    start_unit(name).await
+}
+
+/// Stop the kill switch systemd service by unit name.
+pub async fn stop_kill_switch_unit(name: &str) -> Result<()> {
+    stop_unit(name).await
+}
+
 /// Start a WireGuard wg-quick service for the given interface name.
 pub async fn start_wireguard_unit(interface: &str) -> Result<()> {
     start_unit(&format!("wg-quick@{}.service", interface)).await

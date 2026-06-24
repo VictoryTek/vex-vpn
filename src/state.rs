@@ -65,6 +65,7 @@ pub struct AppState {
     pub profiles: Vec<VpnProfile>,
     pub connection: Option<ConnectionInfo>,
     pub kill_switch_enabled: bool,
+    pub kill_switch_service_name: String,
     pub auto_reconnect: bool,
     pub stale_cycles: u32,
     pub connection_start_ts: Option<u64>,
@@ -84,6 +85,7 @@ impl AppState {
             profiles: Vec::new(),
             connection: None,
             kill_switch_enabled: false,
+            kill_switch_service_name: "vex-vpn-killswitch".to_string(),
             auto_reconnect: true,
             stale_cycles: 0,
             connection_start_ts: None,
@@ -95,6 +97,7 @@ impl AppState {
             active_profile_id: config.active_profile_id.clone(),
             profiles: config.profiles.clone(),
             auto_reconnect: config.auto_reconnect,
+            kill_switch_service_name: config.kill_switch_service.clone(),
             ..Self::new()
         }
     }
@@ -282,7 +285,11 @@ pub(crate) async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
     };
 
     let conn_info = conn_info_res.unwrap_or(None);
-    let kill_switch_active = check_kill_switch().await.unwrap_or(false);
+    let ks_service = {
+        let s = state.read().await;
+        s.kill_switch_service_name.clone()
+    };
+    let kill_switch_active = check_kill_switch(&ks_service).await;
 
     let mut s = state.write().await;
     s.status = new_status;
@@ -302,12 +309,12 @@ pub(crate) async fn poll_once(state: &Arc<RwLock<AppState>>) -> Result<()> {
     Ok(())
 }
 
-async fn check_kill_switch() -> Result<bool> {
-    let output = tokio::process::Command::new("nft")
-        .args(["list", "table", "inet", "vex_kill_switch"])
-        .output()
-        .await?;
-    Ok(output.status.success())
+async fn check_kill_switch(service_name: &str) -> bool {
+    let unit = format!("{}.service", service_name);
+    match crate::dbus::get_service_status(&unit).await {
+        Ok(s) => s == "active",
+        Err(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

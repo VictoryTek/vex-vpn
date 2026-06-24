@@ -30,6 +30,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_kill_switch_service() -> String {
+    "vex-vpn-killswitch".to_string()
+}
+
 /// Persists user preferences to `~/.config/vex-vpn/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -50,6 +54,10 @@ pub struct Config {
     /// Show icon in the system tray.
     #[serde(default = "default_true")]
     pub show_tray_icon: bool,
+    /// Name of the systemd service used as the kill switch.
+    /// Override to "vpn-kill-switch" on vexos-nix to use the system service.
+    #[serde(default = "default_kill_switch_service")]
+    pub kill_switch_service: String,
 }
 
 impl Default for Config {
@@ -61,6 +69,7 @@ impl Default for Config {
             start_minimized: false,
             auto_reconnect: true,
             show_tray_icon: true,
+            kill_switch_service: default_kill_switch_service(),
         }
     }
 }
@@ -164,6 +173,7 @@ mod tests {
             start_minimized: true,
             auto_reconnect: false,
             show_tray_icon: true,
+            kill_switch_service: "vex-vpn-killswitch".to_string(),
         };
         original.save_to(&path).unwrap();
         let loaded = Config::load_from(&path).unwrap();

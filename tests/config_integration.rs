@@ -26,6 +26,7 @@ fn load_from_path_round_trip() {
         start_minimized: true,
         auto_reconnect: false,
         show_tray_icon: true,
+        kill_switch_service: "vex-vpn-killswitch".to_string(),
     };
 
     let toml_str = toml::to_string_pretty(&original).expect("serialize config");
@@ -102,6 +103,7 @@ fn save_to_path_round_trip() {
         start_minimized: false,
         auto_reconnect: true,
         show_tray_icon: false,
+        kill_switch_service: "vex-vpn-killswitch".to_string(),
     };
 
     original.save_to(&path).expect("save config");
@@ -135,6 +137,7 @@ fn config_with_openvpn_profile_round_trips() {
         start_minimized: false,
         auto_reconnect: true,
         show_tray_icon: true,
+        kill_switch_service: "vex-vpn-killswitch".to_string(),
     };
 
     cfg.save_to(&path).expect("save");

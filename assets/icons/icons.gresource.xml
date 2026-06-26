@@ -9,4 +9,7 @@
   <gresource prefix="/com/vex/vpn/icons/hicolor/scalable/apps">
     <file>hicolor/scalable/apps/vex-vpn.svg</file>
   </gresource>
+  <gresource prefix="/com/vex/vpn/branding">
+    <file>vpn2.png</file>
+  </gresource>
 </gresources>

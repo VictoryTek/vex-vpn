@@ -74,6 +74,7 @@
               builtins.match ".*\.ui$"              path != null ||
               builtins.match ".*\.policy$"          path != null ||
               builtins.match ".*\.svg$"             path != null ||
+              builtins.match ".*\.png$"             path != null ||
               builtins.match ".*\.gresource\.xml$" path != null;
             srcFilter = path: type:
               (certFilter path type) || (craneLib.filterCargoSources path type);
@@ -124,6 +125,8 @@
               install -Dm644 assets/icons/hicolor/symbolic/apps/''${icon}.svg \
                 $out/share/icons/hicolor/symbolic/apps/''${icon}.svg
             done
+            install -Dm644 assets/icons/hicolor/256x256/apps/vex-vpn.png \
+              $out/share/icons/hicolor/256x256/apps/vex-vpn.png
             install -Dm644 assets/icons/icons.gresource.xml \
               $out/share/vex-vpn/icons.gresource.xml
 
@@ -135,7 +138,7 @@
             Name=vex-vpn
             Comment=Universal VPN client for NixOS
             Exec=vex-vpn
-            Icon=network-vpn
+            Icon=vex-vpn
             Categories=Network;VPN;
             StartupNotify=true
             EOF

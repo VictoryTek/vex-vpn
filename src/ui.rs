@@ -139,7 +139,7 @@ pub fn build_ui(
     window.add_css_class("vex-window");
 
     let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let (sidebar_box, history_btn, profiles_btn) = build_sidebar();
+    let (sidebar_box, history_btn, profiles_btn, dash_btn) = build_sidebar();
     root.append(&sidebar_box);
 
     let toast_overlay = adw::ToastOverlay::new();
@@ -153,21 +153,48 @@ pub fn build_ui(
         .build();
     nav_view.push(&dashboard_page);
 
+    // Dashboard button → pop back to the root dashboard page.
+    {
+        let nav_c = nav_view.clone();
+        let page_c = dashboard_page.clone();
+        let dash_c = dash_btn.clone();
+        let prof_c = profiles_btn.clone();
+        let hist_c = history_btn.clone();
+        dash_btn.connect_clicked(move |_| {
+            nav_c.pop_to_page(&page_c);
+            dash_c.add_css_class("active");
+            prof_c.remove_css_class("active");
+            hist_c.remove_css_class("active");
+        });
+    }
+
     // Profiles button → push profiles page.
     {
         let nav_c = nav_view.clone();
         let state_c = state.clone();
+        let dash_c = dash_btn.clone();
+        let prof_c = profiles_btn.clone();
+        let hist_c = history_btn.clone();
         profiles_btn.connect_clicked(move |_| {
             let page = crate::ui_profiles::build_profiles_page(state_c.clone(), nav_c.clone());
             nav_c.push(&page);
+            prof_c.add_css_class("active");
+            dash_c.remove_css_class("active");
+            hist_c.remove_css_class("active");
         });
     }
 
     // History button → push history page.
     {
         let nav_c = nav_view.clone();
+        let dash_c = dash_btn.clone();
+        let prof_c = profiles_btn.clone();
+        let hist_c = history_btn.clone();
         history_btn.connect_clicked(move |_| {
             nav_c.push(&build_history_page());
+            hist_c.add_css_class("active");
+            dash_c.remove_css_class("active");
+            prof_c.remove_css_class("active");
         });
     }
 
@@ -301,7 +328,7 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button) {
+fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button, gtk4::Button) {
     let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     sidebar.add_css_class("vex-sidebar");
     sidebar.set_size_request(192, -1);
@@ -311,15 +338,10 @@ fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button) {
     logo_row.set_margin_start(18);
     logo_row.set_margin_bottom(20);
 
-    let logo_img = gtk4::Image::from_icon_name("network-vpn-symbolic");
-    logo_img.set_pixel_size(22);
-
-    let logo_lbl = gtk4::Label::new(Some("vex-vpn"));
-    logo_lbl.set_css_classes(&["section-title"]);
-    logo_lbl.set_halign(gtk4::Align::Start);
+    let logo_img = gtk4::Image::from_resource("/com/vex/vpn/branding/vpn2.png");
+    logo_img.set_pixel_size(28);
 
     logo_row.append(&logo_img);
-    logo_row.append(&logo_lbl);
     sidebar.append(&logo_row);
 
     // Dashboard nav button.
@@ -339,7 +361,7 @@ fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button) {
     history_btn.set_margin_bottom(8);
     sidebar.append(&history_btn);
 
-    (sidebar, history_btn, profiles_btn)
+    (sidebar, history_btn, profiles_btn, dash_btn)
 }
 
 fn nav_button(icon: &str, label: &str, active: bool) -> gtk4::Button {

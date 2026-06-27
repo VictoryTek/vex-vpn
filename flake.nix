@@ -117,16 +117,14 @@
               $out/share/polkit-1/actions/org.vex-vpn.helper.policy \
               --replace-fail '@HELPER_PATH@' "$out/libexec/vex-vpn-helper"
 
-            # Bundled SVG icons
-            install -Dm644 assets/icons/hicolor/scalable/apps/vex-vpn.svg \
-              $out/share/icons/hicolor/scalable/apps/vex-vpn.svg
+            # Bundled icons
+            install -Dm644 assets/icons/vpn.png \
+              $out/share/icons/hicolor/256x256/apps/vex-vpn.png
             for icon in network-vpn-symbolic network-vpn-disabled-symbolic \
                         network-vpn-acquiring-symbolic network-vpn-no-route-symbolic; do
               install -Dm644 assets/icons/hicolor/symbolic/apps/''${icon}.svg \
                 $out/share/icons/hicolor/symbolic/apps/''${icon}.svg
             done
-            install -Dm644 assets/icons/hicolor/256x256/apps/vex-vpn.png \
-              $out/share/icons/hicolor/256x256/apps/vex-vpn.png
             install -Dm644 assets/icons/icons.gresource.xml \
               $out/share/vex-vpn/icons.gresource.xml
 

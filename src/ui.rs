@@ -229,7 +229,7 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
                 return;
             }
             stack.set_visible_child_name(name);
-            for (page, btn) in &nav {
+            for (page, btn) in nav.iter() {
                 if *page == name {
                     btn.add_css_class("active");
                 } else {
@@ -239,7 +239,7 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
         });
     }
     window.add_action(&show_page);
-    for (page, btn) in &nav {
+    for (page, btn) in nav.iter() {
         btn.set_action_name(Some("win.show-page"));
         btn.set_action_target_value(Some(&page.to_variant()));
     }
@@ -269,6 +269,7 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
         });
     }
     let mut changed = ctx.changed.subscribe();
+    ctx.poke();
     glib::spawn_future_local(async move {
         use tokio::sync::broadcast::error::RecvError;
         loop {
@@ -292,7 +293,6 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
             }
         }
     });
-    ctx.poke();
 
     window
 }
@@ -516,9 +516,7 @@ impl Dashboard {
         let sign_in_page = adw::StatusPage::builder()
             .icon_name("dialog-password-symbolic")
             .title("Sign in to PIA")
-            .description(
-                "Enter your Private Internet Access username and password to use the VPN.",
-            )
+            .description("Enter your Private Internet Access username and password to use the VPN.")
             .child(&sign_in_btn)
             .vexpand(true)
             .visible(false)
@@ -557,7 +555,7 @@ impl Dashboard {
                 let btn = btn.clone();
                 glib::spawn_future_local(async move {
                     let snap = ui.ctx.snapshot().await;
-                    if !snap.unit_active && snap.needs_sign_in() {
+                    if !snap.unit_active && snap.can_sign_in() {
                         crate::ui_login::sign_in(&ui, false);
                         return;
                     }
@@ -796,7 +794,8 @@ impl Dashboard {
                 set_state_class(&self.ks_chip, "state-disconnected");
             }
         }
-        self.reconnect_btn.set_visible(snap.unit_active && connected);
+        self.reconnect_btn
+            .set_visible(snap.unit_active && connected);
 
         // ── Rates ────────────────────────────────────────────────────────
         let (rx, tx) = if connected {

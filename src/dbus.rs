@@ -115,7 +115,8 @@ async fn call(method: &str, unit: &str) -> Result<zbus::zvariant::OwnedObjectPat
             &(unit, "replace"),
         )
         .await
-        .map_err(classify)
+        .map_err(classify)?
+        .ok_or_else(|| UnitError::Failed(format!("{} {}: no reply from systemd", method, unit)))
 }
 
 pub async fn start_unit(unit: &str) -> Result<(), UnitError> {

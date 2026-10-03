@@ -8,6 +8,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use vex_vpn::cli::{validate, Credentials, PrivOutcome, Privileged};
 
+/// Tests run in parallel threads: writing one test's script while another
+/// test forks makes exec fail with ETXTBSY ("Text file busy"). Serialize.
+static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const USER: &str = "p1234567";
 const PASS: &str = "s3cr3t-Pa55word";
 
@@ -44,6 +48,7 @@ fn creds() -> Credentials {
 
 #[tokio::test]
 async fn login_writes_credentials_to_stdin_only() {
+    let _lock = SPAWN_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let p = fake_pkexec(dir.path(), 0, "", "");
 
@@ -72,6 +77,7 @@ async fn login_writes_credentials_to_stdin_only() {
 
 #[tokio::test]
 async fn dismissed_or_denied_auth_is_cancelled() {
+    let _lock = SPAWN_LOCK.lock().await;
     for code in [126, 127] {
         let dir = tempfile::tempdir().unwrap();
         let p = fake_pkexec(dir.path(), code, "", "");
@@ -84,6 +90,7 @@ async fn dismissed_or_denied_auth_is_cancelled() {
 
 #[tokio::test]
 async fn missing_polkit_agent_is_reported() {
+    let _lock = SPAWN_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let p = fake_pkexec(
         dir.path(),
@@ -99,6 +106,7 @@ async fn missing_polkit_agent_is_reported() {
 
 #[tokio::test]
 async fn failure_carries_stderr() {
+    let _lock = SPAWN_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let p = fake_pkexec(
         dir.path(),
@@ -117,6 +125,7 @@ async fn failure_carries_stderr() {
 
 #[tokio::test]
 async fn selftest_returns_stdout() {
+    let _lock = SPAWN_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let p = fake_pkexec(dir.path(), 0, "PIA login:       OK", "");
     assert_eq!(

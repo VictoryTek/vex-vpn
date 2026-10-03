@@ -1,221 +1,122 @@
 # vex-vpn
 
-A native Rust/GTK4 GUI for Private Internet Access VPN on NixOS, built on top of the WireGuard-based systemd backend from [tadfisher/flake](https://github.com/tadfisher/flake/blob/main/nixos/modules/pia-vpn.nix).
+The desktop app for **vexos-vpn**, the Private Internet Access VPN and kill
+switch that ships with [vexos-nix](https://github.com/victorytek/vexos-nix).
+It is a native Rust GTK4/libadwaita GUI with a system tray icon.
+
+vex-vpn is only a front end. vexos-vpn owns the tunnel, the firewall and the
+credentials. vex-vpn runs as your normal user, never touches the network,
+firewall or VPN configuration, and never stores your password. If the GUI is
+not available, the `vexos-vpn` command and the `just vpn-*` recipes in
+vexos-nix do everything it does.
 
 ## Features
 
-- **Connect / Disconnect** — one-tap control via D-Bus → systemd
-- **Kill switch** — nftables-based, toggleable at runtime and declarable in Nix config
-- **Port forwarding** — enable/disable `pia-vpn-portforward.service` from the UI
-- **Live stats** — rx/tx bytes from WireGuard interface, connected server, external IP
-- **System tray** — KStatusNotifierItem tray icon (GNOME, KDE, XFCE, etc.)
-- **Settings** — DNS provider, interface name, max latency, server filtering
-- **Auto-connect** — systemd user service for graphical session autostart
-- **Declarative** — all features expressible in `configuration.nix`
+- **Connect, disconnect and reconnect**, from the main window or the tray.
+- **Regions**: a searchable list with measured latency. "Automatic (fastest)"
+  is pinned at the top.
+- **Protocol**: WireGuard (recommended) or OpenVPN (backup).
+- **Kill switch**: turn it on or off. In `always` mode, turning it off asks
+  for your password and lasts until reboot.
+- **PIA account**:
+  - sign in and change account by typing your username and password into the GUI
+  - sign out
+  - test login
+- **Refresh the PIA server list.**
+- **Live status**: state, region, protocol, connected-since time,
+  download/upload rate, kill switch state and the last error.
+- **Tray icon**:
+  - per-state icon
+  - connect/disconnect
+  - kill switch toggle
+  - current region
+  - open window
 
-## Stack
+Two settings are shown read-only because they live in your vexos NixOS config
+(`vexos.vpn.*`): **connect at boot** and **kill switch mode**.
 
-| Layer | Technology |
+## How it works
+
+| What | How |
 |---|---|
-| GUI | GTK4 + libadwaita (gtk4-rs bindings) |
-| Async | Tokio |
-| D-Bus | zbus (pure Rust) |
-| Tray | ksni (KStatusNotifierItem) |
-| VPN backend | WireGuard via systemd-networkd |
-| Firewall | nftables (kill switch) |
-| Build | Crane + Nix flake |
+| Read state | `vexos-vpn status --json` and `vexos-vpn regions --json`, as your user. Polled every 2 s while the window is open, every 10 s otherwise. |
+| Connect, disconnect, region, protocol, kill switch | systemd units started and stopped over D-Bus: `vexos-vpn.service`, `vexos-vpn-region@<id>.service`, `vexos-vpn-protocol@<proto>.service`, `vexos-killswitch.service`. vexos-nix's polkit rules allow these for the `users` group without a password. |
+| Sign in, sign out, test login, refresh server list | `pkexec vexos-vpn login --stdin` / `logout` / `selftest` / `refresh`. Polkit asks for your administrator password. |
 
-## Installation
+When you sign in, the username and password are written only to the stdin of
+`pkexec vexos-vpn login --stdin`. They never go on a command line, into an
+environment variable, into a log or onto disk. vex-vpn's own copies are wiped
+from memory straight after. vexos-vpn stores them in a file only root can read.
 
-### Quick Start (Nix Flake)
+If your credentials come from sops-nix (`vexos.vpn.credentialsFile`), the
+account buttons are disabled and the GUI says why.
 
-Run directly without installing:
+## Installation (vexos-nix)
 
-```bash
-nix run github:victorytek/vex-vpn
-```
-
-Install to your Nix profile:
-
-```bash
-nix profile add github:victorytek/vex-vpn
-```
-
-> **Note:** The quick-start options launch the GUI only. For kill switch, port forwarding, and autostart you need the full NixOS module setup below.
-
----
-
-### Full NixOS Module Setup
-
-### Step 1 — Add both flakes to your system flake
+Add the flake input, following vexos-nix's nixpkgs:
 
 ```nix
 # flake.nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-
-    # The WireGuard/systemd backend (tadfisher's module)
-    tadfisher-flake.url = "github:tadfisher/flake";
-    tadfisher-flake.inputs.nixpkgs.follows = "nixpkgs";
-
-    # This GUI
-    vex-vpn.url = "github:yourname/vex-vpn";  # or path:./vex-vpn
-    vex-vpn.inputs.nixpkgs.follows = "nixpkgs";
-  };
-
-  outputs = { nixpkgs, tadfisher-flake, vex-vpn, self }: {
-    nixosConfigurations.mymachine = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        # Backend service
-        "${tadfisher-flake}/nixos/modules/pia-vpn.nix"
-        # GUI + NixOS module
-        vex-vpn.nixosModules.default
-        ./configuration.nix
-      ];
-    };
-  };
-}
-```
-
-### Step 2 — Configure in configuration.nix
-
-```nix
-{ config, ... }: {
-
-  # ── VPN backend (tadfisher's module) ──────────────
-  services.pia-vpn = {
-    enable = true;
-    interface = "wg0";
-    maxLatency = 0.1;
-
-    # CA cert from: https://raw.githubusercontent.com/pia-foss/manual-connections/master/ca.rsa.4096.crt
-    certificateFile = ./ca.rsa.4096.crt;
-
-    # Create this file with:
-    #   echo "PIA_USER=your_username" > /run/secrets/pia
-    #   echo "PIA_PASS=your_password" >> /run/secrets/pia
-    # Better: use sops-nix or agenix
-    environmentFile = "/run/secrets/pia";
-
-    portForward.enable = true;
-  };
-
-  # ── GUI ───────────────────────────────────────────
-  services.vex-vpn = {
-    enable = true;
-    autostart = true;   # launch on graphical login
-
-    killSwitch.enable = true;
-    killSwitch.allowedInterfaces = [ "lo" "eth0" ];  # allow LAN even when VPN drops
-
-    dns.provider = "pia";  # use PIA's own DNS — overrides the 8.8.8.8 hardcode
-  };
-}
-```
-
-### Step 3 — Get the CA certificate
-
-```bash
-curl -o ca.rsa.4096.crt \
-  https://raw.githubusercontent.com/pia-foss/manual-connections/master/ca.rsa.4096.crt
-```
-
-Place it next to your `configuration.nix`.
-
-### Step 4 — Create credentials file
-
-Using sops-nix (recommended):
-```nix
-sops.secrets.pia = {
-  format = "dotenv";
-  # file contents:
-  # PIA_USER=your_username
-  # PIA_PASS=your_password
+inputs.vex-vpn = {
+  url = "github:victorytek/vex-vpn";
+  inputs.nixpkgs.follows = "nixpkgs";
 };
-services.pia-vpn.environmentFile = config.sops.secrets.pia.path;
 ```
 
-Or manually (less secure):
+Then enable it in a module that is imported alongside `modules/vpn.nix`:
+
+```nix
+{ inputs, ... }: {
+  imports = [ inputs.vex-vpn.nixosModules.default ];
+
+  programs.vex-vpn = {
+    enable = true;
+    tray.autostart = true;   # default
+  };
+}
+```
+
+`tray.autostart` adds a systemd user service, `vex-vpn-tray`, bound to
+`graphical-session.target`. GNOME and Hyprland under UWSM both start it.
+
+The module only installs the app and that user service. The VPN units, kill
+switch and polkit rules all come from vexos-nix.
+
+### Flake outputs
+
+| Output | Contents |
+|---|---|
+| `packages.x86_64-linux.default` | The GUI, with its `.desktop` file (`Categories=Network;`) and icons |
+| `overlays.default` | Adds `pkgs.vex-vpn` |
+| `nixosModules.default` | `programs.vex-vpn.enable` and `programs.vex-vpn.tray.autostart` |
+
+## Backup: the command line
+
+Everything in the GUI is also available from a terminal:
+
 ```bash
-sudo mkdir -p /run/secrets
-sudo sh -c 'echo "PIA_USER=your_username" > /run/secrets/pia'
-sudo sh -c 'echo "PIA_PASS=your_password" >> /run/secrets/pia'
-sudo chmod 600 /run/secrets/pia
+vexos-vpn status            # or: just vpn-status
+vexos-vpn up | down         # just vpn-up / just vpn-down
+vexos-vpn regions           # just vpn-regions
+vexos-vpn region <id|auto>  # just vpn-region <id>
+vexos-vpn protocol wireguard|openvpn
+vexos-vpn killswitch on|off
+sudo vexos-vpn login        # just vpn-login
+sudo vexos-vpn selftest     # just vpn-selftest
 ```
 
 ## Development
 
 ```bash
-git clone https://github.com/yourname/vex-vpn
+git clone https://github.com/victorytek/vex-vpn
 cd vex-vpn
-nix develop          # drops into shell with Rust + GTK4 + all deps
-cargo watch -x run   # live reload
+nix develop                  # nixpkgs Rust toolchain + GTK4/libadwaita
+cargo run                    # inside the dev shell
+bash scripts/preflight.sh    # fmt, clippy, build, test, release build, nix build
 ```
 
-## Kill Switch Details
-
-The kill switch is implemented as an nftables table (`inet pia_kill_switch`). When enabled:
-
-- All outbound traffic is **dropped by default**
-- Traffic on the WireGuard interface (`wg0`) is **allowed**
-- Loopback is **allowed**
-- Configured `allowedInterfaces` and `allowedAddresses` are **allowed**
-- Established/related connections are **allowed** to recover gracefully
-
-The GUI toggle calls `nft` at runtime. The NixOS module option (`killSwitch.enable = true`) makes it declarative and persistent across reboots.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│              vex-vpn (Rust)             │
-│                                         │
-│  ┌──────────┐  ┌──────────┐            │
-│  │  GTK4 UI │  │  Tray    │            │
-│  │(libadw)  │  │  (ksni)  │            │
-│  └────┬─────┘  └────┬─────┘            │
-│       │              │                  │
-│  ┌────▼──────────────▼────┐            │
-│  │   AppState (Arc<RwLock>)│            │
-│  │   + poll loop (Tokio)   │            │
-│  └────────────┬────────────┘            │
-│               │                         │
-│  ┌────────────▼────────────┐            │
-│  │   D-Bus (zbus)          │            │
-│  │   nft (subprocess)      │            │
-│  │   wg show (subprocess)  │            │
-│  └────────────┬────────────┘            │
-└───────────────┼─────────────────────────┘
-                │ systemd D-Bus API
-┌───────────────▼─────────────────────────┐
-│         pia-vpn.service (systemd)       │
-│         pia-vpn-portforward.service     │
-│         (tadfisher's WireGuard scripts) │
-└─────────────────────────────────────────┘
-```
-
-## Updating / Forcing a Fresh Build
-
-If you ran `nix run github:victorytek/vex-vpn` and want to pull the latest build, use `--refresh` to bypass the cached flake lock:
-
-```bash
-nix run github:victorytek/vex-vpn --refresh
-```
-
-To also discard the previously built store path and force a full rebuild:
-
-```bash
-nix run github:victorytek/vex-vpn --refresh --no-cache
-```
-
-Or garbage-collect old store paths first:
-
-```bash
-nix store gc
-nix run github:victorytek/vex-vpn --refresh
-```
+The GUI needs a vexos system with `vexos-vpn` installed. Without it, the GUI
+shows a "vexos-vpn backend not installed" page.
 
 ## License
 

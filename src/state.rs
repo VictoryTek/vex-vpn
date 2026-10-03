@@ -32,10 +32,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// A status is available and the user is signed out (or the backend
-    /// reported missing credentials).
-    pub fn needs_sign_in(&self) -> bool {
-        self.status.as_ref().is_some_and(Status::needs_sign_in)
+    /// Signing in from the GUI would help: credentials are missing and are
+    /// not managed declaratively (sops).
+    pub fn can_sign_in(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|s| s.needs_sign_in() && s.credentials_editable)
     }
 }
 
@@ -142,13 +144,19 @@ pub async fn poll_loop(ctx: Ctx) {
                     new.status = Some(status);
                 }
                 Err(e) => {
+                    // Keep showing the last known status; the UI adds a banner.
                     warn!("status poll failed: {e:#}");
                     new.poll_error = Some(format!("{e:#}"));
+                    new.status = ctx.state.read().await.status.clone();
                 }
             }
         }
 
-        let state_now = new.status.as_ref().map(|s| s.state);
+        let state_now = if new.poll_error.is_none() {
+            new.status.as_ref().map(|s| s.state)
+        } else {
+            prev_state
+        };
         let became_connected =
             state_now == Some(VpnState::Connected) && prev_state != Some(VpnState::Connected);
 

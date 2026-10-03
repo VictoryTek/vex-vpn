@@ -153,10 +153,14 @@ pub fn wipe(buf: &mut [u8]) {
 /// Result of a `pkexec vexos-vpn …` run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrivOutcome {
-    Ok { stdout: String },
+    Ok {
+        stdout: String,
+    },
     /// pkexec exit 126 (dialog dismissed) or 127 (not authorized). `no_agent`
     /// is set when no polkit authentication agent is running.
-    Cancelled { no_agent: bool },
+    Cancelled {
+        no_agent: bool,
+    },
     Failed {
         code: i32,
         stdout: String,

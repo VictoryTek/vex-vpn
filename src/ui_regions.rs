@@ -17,7 +17,7 @@ pub struct RegionsPage {
     content: gtk4::Stack,
     empty: adw::StatusPage,
     /// (regions_version, region_setting) last rendered.
-    rendered: RefCell<Option<(u64, String)>>,
+    rendered: Rc<RefCell<Option<(u64, String)>>>,
     busy: Rc<Cell<bool>>,
 }
 
@@ -99,16 +99,22 @@ impl RegionsPage {
             list,
             content,
             empty,
-            rendered: RefCell::new(None),
+            rendered: Rc::default(),
             busy: Rc::new(Cell::new(false)),
         };
         {
             let ui = ui.clone();
             let busy = page.busy.clone();
             let list = page.list.clone();
+            let rendered = page.rendered.clone();
             page.list.connect_row_activated(move |_, row| {
                 let id = row.widget_name().to_string();
-                if busy.get() || !is_valid_unit_arg(&id) {
+                let current = rendered
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|(_, cur)| *cur == id);
+                // Re-selecting the current region would only restart the tunnel.
+                if current || busy.get() || !is_valid_unit_arg(&id) {
                     return;
                 }
                 busy.set(true);
@@ -139,7 +145,8 @@ impl RegionsPage {
         match &snap.regions {
             None => self.content.set_visible_child_name("loading"),
             Some(Err(err)) => {
-                self.empty.set_description(Some(&glib::markup_escape_text(err)));
+                self.empty
+                    .set_description(Some(&glib::markup_escape_text(err)));
                 self.content.set_visible_child_name("empty");
             }
             Some(Ok(regions)) => {
@@ -165,9 +172,7 @@ impl RegionsPage {
             current == AUTO_REGION,
         ));
         for r in regions {
-            let latency = r
-                .latency_s
-                .map(|s| format!("{:.0} ms", s * 1000.0));
+            let latency = r.latency_s.map(|s| format!("{:.0} ms", s * 1000.0));
             self.list.append(&region_row(
                 &r.id,
                 &r.name,

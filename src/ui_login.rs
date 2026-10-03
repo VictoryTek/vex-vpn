@@ -146,12 +146,7 @@ pub fn sign_in(ui: &Ui, change: bool) {
         }
         let ui = ui.clone();
         glib::spawn_future_local(async move {
-            let was_signed_in = ui
-                .ctx
-                .snapshot()
-                .await
-                .status
-                .is_some_and(|s| s.logged_in);
+            let was_signed_in = ui.ctx.snapshot().await.status.is_some_and(|s| s.logged_in);
             let result = ui
                 .ctx
                 .run(async move { Privileged::default().login(creds).await })
@@ -183,12 +178,7 @@ pub fn sign_in(ui: &Ui, change: bool) {
 pub fn sign_out(ui: &Ui) {
     let ui = ui.clone();
     glib::spawn_future_local(async move {
-        let ks_on = ui
-            .ctx
-            .snapshot()
-            .await
-            .status
-            .is_some_and(|s| s.killswitch);
+        let ks_on = ui.ctx.snapshot().await.status.is_some_and(|s| s.killswitch);
         let mut body = String::from(
             "This removes your PIA credentials from this computer and disconnects the VPN.",
         );

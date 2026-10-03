@@ -66,7 +66,9 @@ fn main() -> Result<()> {
                         TrayMessage::ShowWindow => app.activate(),
                         TrayMessage::ShowRegions => {
                             app.activate();
-                            if let Some(win) = app.active_window() {
+                            if let Some(win) =
+                                app.active_window().and_downcast::<adw::ApplicationWindow>()
+                            {
                                 ActionGroupExt::activate_action(
                                     &win,
                                     "show-page",

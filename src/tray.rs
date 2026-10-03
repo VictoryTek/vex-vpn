@@ -1,7 +1,7 @@
 use crate::dbus::{self, UnitError};
 use crate::state::{AppState, Ctx};
 use ksni::Tray;
-use vex_vpn::vexos::{KillSwitchMode, VpnState};
+use vex_vpn::vexos::{is_valid_unit_arg, protocol_label, KillSwitchMode, VpnState, AUTO_REGION};
 
 // ---------------------------------------------------------------------------
 // Messages sent from the tray thread to the GTK main thread.
@@ -34,7 +34,11 @@ impl VexTray {
             .unwrap_or_default()
     }
 
-    fn unit_action(&self, what: &'static str, fut: impl std::future::Future<Output = Result<(), UnitError>> + Send + 'static) {
+    fn unit_action(
+        &self,
+        what: &'static str,
+        fut: impl std::future::Future<Output = Result<(), UnitError>> + Send + 'static,
+    ) {
         let ctx = self.ctx.clone();
         self.ctx.spawn(async move {
             match fut.await {
@@ -134,7 +138,7 @@ impl Tray for VexTray {
         .into()];
 
         let unit_active = self.snap.unit_active;
-        let needs_sign_in = self.snap.needs_sign_in();
+        let needs_sign_in = self.snap.can_sign_in();
         items.push(
             StandardItem {
                 label: if unit_active {
@@ -184,7 +188,7 @@ impl Tray for VexTray {
             );
         }
 
-        let region = if status.region_setting == vex_vpn::vexos::AUTO_REGION {
+        let region = if status.region_setting == AUTO_REGION {
             if status.region_name.is_empty() {
                 "Automatic (fastest)".to_string()
             } else {
@@ -195,22 +199,126 @@ impl Tray for VexTray {
         } else {
             status.region_name.clone()
         };
-        items.push(
-            StandardItem {
-                label: format!("Region: {}", region),
-                activate: Box::new(|t: &mut VexTray| {
-                    let _ = t.tx.try_send(TrayMessage::ShowRegions);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
+        items.push(region_menu(&self.snap, &status.region_setting, region));
+        items.push(protocol_menu(&status.protocol_setting));
 
         items.push(ksni::MenuItem::Separator);
         items.push(open.into());
         items.push(quit.into());
         items
     }
+}
+
+/// Regions offered directly in the tray: the 10 fastest measured ones plus
+/// the current choice. Everything else is in the window ("All regions…").
+const TRAY_REGIONS: usize = 10;
+
+fn region_menu(snap: &AppState, current: &str, label: String) -> ksni::MenuItem<VexTray> {
+    use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
+
+    let mut ids = vec![AUTO_REGION.to_string()];
+    let mut labels = vec!["Automatic (fastest)".to_string()];
+    if let Some(Ok(regions)) = &snap.regions {
+        let mut fastest: Vec<_> = regions.iter().filter(|r| r.latency_s.is_some()).collect();
+        fastest.sort_by(|a, b| {
+            a.latency_s
+                .partial_cmp(&b.latency_s)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        fastest.truncate(TRAY_REGIONS);
+        if current != AUTO_REGION && !fastest.iter().any(|r| r.id == current) {
+            if let Some(r) = regions.iter().find(|r| r.id == current) {
+                fastest.push(r);
+            }
+        }
+        for r in fastest {
+            ids.push(r.id.clone());
+            labels.push(match r.latency_s {
+                Some(s) => format!("{} ({:.0} ms)", r.name, s * 1000.0),
+                None => r.name.clone(),
+            });
+        }
+    }
+    let selected = ids
+        .iter()
+        .position(|id| id == current)
+        .unwrap_or(usize::MAX);
+
+    SubMenu {
+        label: format!("Region: {}", label),
+        submenu: vec![
+            RadioGroup {
+                selected,
+                select: Box::new(move |t: &mut VexTray, i| {
+                    if i == selected {
+                        return; // already the current region
+                    }
+                    let Some(id) = ids.get(i).filter(|id| is_valid_unit_arg(id)).cloned() else {
+                        return;
+                    };
+                    t.unit_action("Change region", async move {
+                        dbus::run_oneshot(&dbus::region_unit(&id)).await
+                    });
+                }),
+                options: labels
+                    .into_iter()
+                    .map(|label| RadioItem {
+                        label,
+                        ..Default::default()
+                    })
+                    .collect(),
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: "All regions\u{2026}".to_string(),
+                activate: Box::new(|t: &mut VexTray| {
+                    let _ = t.tx.try_send(TrayMessage::ShowRegions);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        ],
+        ..Default::default()
+    }
+    .into()
+}
+
+fn protocol_menu(current: &str) -> ksni::MenuItem<VexTray> {
+    use ksni::menu::{RadioGroup, RadioItem, SubMenu};
+
+    const PROTOCOLS: [&str; 2] = ["wireguard", "openvpn"];
+    let selected = PROTOCOLS
+        .iter()
+        .position(|p| *p == current)
+        .unwrap_or(usize::MAX);
+    SubMenu {
+        label: format!("Protocol: {}", protocol_label(current)),
+        submenu: vec![RadioGroup {
+            selected,
+            select: Box::new(move |t: &mut VexTray, i| {
+                if i == selected {
+                    return; // already the current protocol
+                }
+                let Some(proto) = PROTOCOLS.get(i) else {
+                    return;
+                };
+                t.unit_action("Change protocol", async move {
+                    dbus::run_oneshot(&dbus::protocol_unit(proto)).await
+                });
+            }),
+            options: PROTOCOLS
+                .iter()
+                .map(|p| RadioItem {
+                    label: protocol_label(p).to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+        }
+        .into()],
+        ..Default::default()
+    }
+    .into()
 }
 
 /// Start the tray service and keep its snapshot in sync with `ctx.state`.

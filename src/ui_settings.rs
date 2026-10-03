@@ -79,7 +79,9 @@ impl SettingsPage {
         root.add(&conn_group);
 
         // ── Kill switch ──────────────────────────────────────────────────
-        let ks_group = adw::PreferencesGroup::builder().title("Kill switch").build();
+        let ks_group = adw::PreferencesGroup::builder()
+            .title("Kill switch")
+            .build();
         let ks_row = adw::SwitchRow::builder().title("Kill switch").build();
         {
             let ui = ui.clone();
@@ -131,8 +133,8 @@ impl SettingsPage {
         let change_btn = row_button("Change", None);
         let sign_out_btn = row_button("Sign out", Some("destructive-action"));
         {
-            let ui = ui.clone();
-            sign_in_btn.connect_clicked(move |_| crate::ui_login::sign_in(&ui, false));
+            let ui1 = ui.clone();
+            sign_in_btn.connect_clicked(move |_| crate::ui_login::sign_in(&ui1, false));
             let ui2 = ui.clone();
             change_btn.connect_clicked(move |_| crate::ui_login::sign_in(&ui2, true));
             let ui3 = ui.clone();
@@ -206,10 +208,7 @@ impl SettingsPage {
 
         if !self.busy.get() {
             self.syncing.set(true);
-            if let Some(i) = PROTOCOLS
-                .iter()
-                .position(|p| *p == status.protocol_setting)
-            {
+            if let Some(i) = PROTOCOLS.iter().position(|p| *p == status.protocol_setting) {
                 self.protocol_row.set_selected(i as u32);
             }
             self.ks_row.set_active(status.killswitch);

@@ -385,12 +385,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "configparser"
-version = "3.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e57e3272f0190c3f1584272d613719ba5fc7df7f4942fe542e63d949cf3a649b"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2210,7 +2204,6 @@ version = "1.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
- "getrandom 0.4.2",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
@@ -2246,26 +2239,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
- "async-trait",
- "configparser",
- "futures-util",
  "gio",
  "glib",
  "glib-build-tools",
  "gtk4",
  "ksni",
  "libadwaita",
- "libc",
  "notify-rust",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "zbus 3.15.2",
 ]
 

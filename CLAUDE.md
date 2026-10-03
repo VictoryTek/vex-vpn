@@ -131,9 +131,9 @@ verify current APIs and documentation using Context7.
 ## Project Context
 
 Project Name: **vex-vpn**
-Project Type: **GTK4 Desktop GUI Application (Linux/NixOS)**
+Project Type: **GTK4 Desktop GUI Application (Linux/NixOS) — the GUI for the `vexos-vpn` backend from vexos-nix**
 Primary Language(s): **Rust**
-Framework(s): **GTK4 + libadwaita (via gtk4-rs / libadwaita-rs), Tokio async runtime, zbus (D-Bus), Nix flake build**
+Framework(s): **GTK4 + libadwaita (via gtk4-rs / libadwaita-rs), Tokio async runtime, zbus 3 (systemd D-Bus), ksni (tray), Nix flake build (crane over the nixpkgs Rust toolchain)**
 
 Build Command(s):
 - `nix develop --command cargo build` (debug build — always use inside Nix devshell)
@@ -141,7 +141,7 @@ Build Command(s):
 - `nix build` (full Nix/Crane reproducible release build)
 
 Test Command(s):
-- `nix develop --command cargo test` (integration + unit tests in `tests/`)
+- `nix develop --command cargo test` (unit tests plus `tests/backend_contract.rs` and `tests/login_stdin.rs`)
 - `nix develop --command cargo fmt --check` (format check)
 - `nix develop --command cargo clippy -- -D warnings` (lint, zero-warning gate)
 
@@ -150,28 +150,38 @@ Package Manager(s): **Cargo (Rust) + Nix flake (system dependencies and devshell
 ### Resource Constraints
 
 - CI environment: GitHub Actions free tier (`ubuntu-latest`) with DeterminateSystems Nix installer and Magic Nix Cache
-- OS requirements: Linux only — the application uses GTK4, libadwaita, D-Bus (zbus), and systemd/NetworkManager integration; it will not build or run on macOS or Windows
+- OS requirements: Linux only — the application uses GTK4, libadwaita, systemd over D-Bus (zbus) and polkit/pkexec; it will not build or run on macOS or Windows
 - Build layout constraints: All `cargo` commands MUST be run inside `nix develop --command …` to have GTK4/libadwaita/glib system libraries available; bare `cargo build` will fail on any machine without those libraries globally installed
 - Large disk side-effects: `nix build` (Crane release) downloads and caches large Nix store closures; avoid repeating it unnecessarily
-- Other constraints: The `vex-vpn-helper` binary requires root UID at runtime (polkit policy in `nix/polkit-vex-vpn.policy`); tests must not attempt to elevate privileges
+- Other constraints:
+  - vex-vpn never runs as root and never touches the network, firewall or VPN configs; every privileged action goes through systemd (polkit rules shipped by vexos-nix) or `pkexec vexos-vpn …`
+  - It must never store, log or put credentials in argv/env; PIA credentials go only to the stdin of `pkexec vexos-vpn login --stdin`
+  - It writes no files. Tests must not attempt to elevate privileges (they use a fake pkexec script)
+  - `vexos-vpn` may be absent at runtime; the GUI shows a "backend not installed" page instead of failing
 
 ### Repository Notes
 
 - Key Directories:
-  - `src/` — Rust application source (UI modules `ui*.rs`, backend drivers `backend/`, parsers `parser/`, D-Bus layer `dbus.rs`, system tray `tray.rs`)
-  - `src/bin/helper.rs` — privileged helper binary entry point
-  - `tests/` — Rust integration tests (`config_integration.rs`)
-  - `assets/` — GTK resources (icon gresource bundle, shortcuts UI, CA certificate)
-  - `nix/` — NixOS module fragments (`module-gui.nix`, `module-vpn.nix`, polkit policy)
+  - `src/` — Rust application source:
+    - `vexos.rs` — JSON data model for `vexos-vpn status|regions --json` (pure, in the library crate)
+    - `cli.rs` — running `vexos-vpn` and `pkexec vexos-vpn …`, credential handling (library crate)
+    - `dbus.rs` — systemd Manager/Unit/Job zbus proxies
+    - `state.rs` — shared `AppState` and the status poll loop
+    - `ui.rs`, `ui_regions.rs`, `ui_settings.rs`, `ui_login.rs` — GTK4/libadwaita UI
+    - `tray.rs` — ksni system tray
+  - `tests/` — `backend_contract.rs` (parses fixtures in `tests/fixtures/`) and `login_stdin.rs` (fake pkexec)
+  - `assets/` — GTK resources (icon gresource bundle, shortcuts UI)
+  - `nix/` — `package.nix` (crane package, desktop file, icons) and `module.nix` (`programs.vex-vpn.enable` and `tray.autostart` only)
   - `scripts/` — Developer tooling (`preflight.sh`)
   - `.github/workflows/` — CI pipeline (`ci.yml`)
   - `docs/` — Project documentation
-- Architecture Pattern: **Single-process GTK4 application with async Tokio runtime; privileged operations delegated to `vex-vpn-helper` via D-Bus (zbus); VPN backends (OpenVPN, WireGuard) abstracted behind `VpnBackend` async trait; UI state managed through `AppState`**
+- Architecture Pattern: **Single-process, unprivileged GTK4 application with an async Tokio runtime. State is polled from `vexos-vpn status --json` into `AppState`; actions are systemd unit calls over D-Bus (zbus) or `pkexec vexos-vpn …` (polkit admin prompt). The VPN, kill switch and credentials belong to vexos-vpn in vexos-nix (`modules/vpn.nix`, `pkgs/vexos-vpn/vexos-vpn.sh`), which is the source of truth for the contract.**
 - Special Constraints:
   - All `cargo` invocations must be prefixed with `nix develop --command` to enter the Nix devshell
   - The zero-warning Clippy gate (`-D warnings`) is enforced in CI — any new warning blocks merge
   - The `Cargo.lock` is committed and must stay in sync; do not run `cargo update` without explicit user approval
-  - Two binaries are produced: `vex-vpn` (user-facing GUI) and `vex-vpn-helper` (runs as root); keep their responsibilities cleanly separated
+  - One binary is produced (`vex-vpn`); keep it unprivileged. `nixosModules.default` must declare only `programs.vex-vpn.*` — no polkit rules, system services, firewall, or anything named `vexos-vpn*` / `vexos-killswitch*`
+  - Flake outputs consumed by vexos-nix: `packages.x86_64-linux.default`, `overlays.default`, `nixosModules.default`; nixpkgs is nixos-26.05 and is overridden with `follows`
 
 ---
 
@@ -380,11 +390,11 @@ Review the implemented code against all of the following:
 
 1. **Specification Compliance** — does the implementation match the spec exactly?
 2. **Best Practices** — Rust idioms, GTK4/libadwaita patterns, async Tokio conventions, zbus D-Bus usage
-3. **Consistency** — matches existing project patterns and style (module layout, error handling with `anyhow`/`thiserror`, `tracing` for logging)
+3. **Consistency** — matches existing project patterns and style (module layout, error handling with `anyhow`, `tracing` for logging)
 4. **Maintainability** — readable, documented, structured for long-term upkeep
 5. **Completeness** — all requirements addressed
 6. **Performance** — no regressions or inefficiencies introduced (no blocking calls on the GTK main thread)
-7. **Security** — no new vulnerabilities; privilege boundary between `vex-vpn` and `vex-vpn-helper` preserved
+7. **Security** — no new vulnerabilities; vex-vpn stays unprivileged (no root, no credentials in argv/env/logs/disk)
 8. **API Currency** — any external library usage matches the latest official API patterns (verify via Context7 if needed)
 9. **Build Validation:**
    - Run ONLY the build and test commands approved in the Phase 1 spec
@@ -563,7 +573,7 @@ Modified Files:
 
 Valid commit types: `feat`, `fix`, `chore`, `refactor`, `docs`, `test`, `perf`
 
-Example first line: `fix(wireguard): resolve profile UUID collision on import`
+Example first line: `fix(tray): refresh the icon when the VPN state changes`
 
 ---
 

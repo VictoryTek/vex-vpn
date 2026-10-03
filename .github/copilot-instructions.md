@@ -61,7 +61,7 @@ Context7 is NOT required for:
 # Project Context
 
 Project Name: **vex-vpn**  
-Project Type: **NixOS desktop GUI — VPN frontend for PIA (Private Internet Access) over a WireGuard/systemd backend**  
+Project Type: **NixOS desktop GUI for `vexos-vpn` (PIA WireGuard/OpenVPN + kill switch, shipped by vexos-nix)**  
 Primary Language(s): **Rust (2021 edition)**  
 Framework(s): **GTK4 (gtk4 0.7.x), libadwaita (0.5.x), Tokio 1.x (async runtime), zbus 3.x (D-Bus), ksni 0.2 (KStatusNotifierItem system tray)**  
 
@@ -74,20 +74,21 @@ Test Command(s):
 - `nix develop --command cargo test` — runs all Rust unit and integration tests  
 - `nix develop --command cargo clippy -- -D warnings` — zero-warning linting gate  
 
-Package Manager(s): **Cargo (crates.io) + Nix Flakes (nixpkgs/nixos-unstable, Crane)**  
+Package Manager(s): **Cargo (crates.io) + Nix Flakes (nixpkgs/nixos-26.05, Crane)**  
 
 Repository Notes:  
 - Key Directories:  
-  - `src/` — all Rust source modules (`main.rs`, `app.rs`, `config.rs`, `dbus.rs`, `state.rs`, `tray.rs`, `ui.rs`)  
-  - `src/config.rs` — TOML-based config persistence at `~/.config/vex-vpn/config.toml` (serde Serialize/Deserialize)  
-  - `src/dbus.rs` — zbus 3.x D-Bus proxy definitions for `org.freedesktop.systemd1` (WireGuard unit start/stop)  
-  - `src/state.rs` — `AppState`, `ConnectionStatus` enum, background `poll_loop` (Tokio async)  
-  - `src/tray.rs` — system tray via `ksni` on a dedicated OS thread with its own single-threaded Tokio runtime  
-  - `src/ui.rs` — GTK4/libadwaita UI with embedded CSS; built and driven from the GTK main thread  
-  - `flake.nix` — Nix Flake declaring the dev shell, Crane-based package build, and NixOS module  
-  - `module.nix` — NixOS module for system-level service and desktop integration  
+  - `src/vexos.rs` — serde model of `vexos-vpn status|regions --json` (library crate, no GTK)  
+  - `src/cli.rs` — runs `vexos-vpn` and `pkexec vexos-vpn …`; credentials go only to pkexec's stdin (library crate)  
+  - `src/dbus.rs` — zbus 3.x proxies for `org.freedesktop.systemd1` (Manager, Unit, Job)  
+  - `src/state.rs` — `AppState`, `Ctx`, and the `poll_loop` over `vexos-vpn status --json`  
+  - `src/tray.rs` — ksni tray, refreshed with `Handle::update` from the poll broadcast  
+  - `src/ui.rs`, `src/ui_regions.rs`, `src/ui_settings.rs`, `src/ui_login.rs` — GTK4/libadwaita UI, driven from the GTK main thread  
+  - `tests/` — `backend_contract.rs` (fixtures in `tests/fixtures/`) and `login_stdin.rs` (fake pkexec)  
+  - `flake.nix` — packages, overlays, nixosModules, devShell, checks (crane over the nixpkgs Rust toolchain)  
+  - `nix/package.nix`, `nix/module.nix` — the package (desktop file, icons) and the module (`programs.vex-vpn.enable`, `tray.autostart` only)  
   - `Cargo.toml` — Rust package manifest; binary name is `vex-vpn`  
-- Architecture Pattern: **Multi-threaded event-driven — GTK4 main thread (UI), Tokio `Runtime` for async state polling and D-Bus calls, separate OS thread with its own Tokio runtime for the ksni tray; threads communicate via `Arc<RwLock<AppState>>` and a `std::sync::mpsc::SyncSender<TrayMessage>`**  
+- Architecture Pattern: **Unprivileged, event-driven — GTK4 main thread (UI), one Tokio `Runtime` for the status poll, D-Bus calls and subprocesses, the ksni tray on its own thread; shared state is `Arc<RwLock<AppState>>`, change notifications use a `tokio::sync::broadcast` channel, and tray-to-window messages use an `async_channel`**  
 - Special Constraints: **All builds and tool invocations MUST run inside `nix develop` (or via `nix build`) to satisfy GTK4 pkg-config paths and `GI_TYPELIB_PATH`; GTK4 must execute exclusively on the main thread; zbus is pinned to 3.x for Rust 1.75 compatibility; the compiled binary is named `vex-vpn` matching the Cargo package name; D-Bus system bus must be available at runtime for systemd service control**  
 
 ---
@@ -475,10 +476,11 @@ Run the following commands in order and treat ANY non-zero exit as CRITICAL:
    - Failure indicates a Nix expression or dependency issue — CRITICAL.
 
 Additional vex-vpn-specific checks:
-- Confirm no new `use gtk4::...` or UI calls appear outside `src/ui.rs` or the GTK main thread path in `src/main.rs` (GTK4 is not thread-safe).
+- Confirm no new `use gtk4::...` or UI calls appear outside the `src/ui*.rs` modules or the GTK main thread path in `src/main.rs` (GTK4 is not thread-safe).
 - Confirm any new `zbus` usage targets the 3.x API (`dbus_proxy` macro, `Connection::system().await`) and does not introduce 4.x patterns.
 - Confirm `Arc<RwLock<AppState>>` is used for shared state — do not introduce `Mutex` as a replacement without justification.
-- Confirm config persistence still targets `~/.config/vex-vpn/config.toml` via the `config_path()` helper.
+- Confirm vex-vpn still writes no files, never runs as root, and that PIA credentials never appear in argv, env, logs or on disk (only pkexec's stdin).
+- Confirm `nixosModules.default` declares only `programs.vex-vpn.*` (no polkit rules, system services, firewall, or `vexos-vpn*` / `vexos-killswitch*` names).
 - Confirm the binary name remains `vex-vpn` in `Cargo.toml` `[[bin]]` section.
 
 If any build step fails:

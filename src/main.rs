@@ -1,27 +1,23 @@
-mod backend;
-mod config;
 mod dbus;
-mod helper;
-mod history;
-mod parser;
-mod profile;
 mod state;
 mod tray;
 mod ui;
-mod ui_import;
-mod ui_prefs;
-mod ui_profiles;
+mod ui_login;
+mod ui_regions;
+mod ui_settings;
 
 use anyhow::Result;
 use gio::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use tracing::info;
 
-use crate::state::AppState;
+use crate::state::Ctx;
 use crate::tray::TrayMessage;
+
+const APP_ID: &str = "com.vex.vpn.nixos";
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -37,100 +33,74 @@ fn main() -> Result<()> {
     gio::resources_register_include!("icons.gresource")
         .expect("failed to register bundled GResources");
 
-    let cfg = config::Config::load().unwrap_or_else(|e| {
-        warn!("Failed to load config: {e:#}");
-        config::Config::default()
-    });
+    // `--tray` (used by the session autostart service): start without a
+    // window and keep running in the tray. Stripped before GApplication sees
+    // the arguments, which would otherwise reject the unknown option.
+    let mut args: Vec<String> = std::env::args().collect();
+    let tray_mode = args.iter().skip(1).any(|a| a == "--tray");
+    args.retain(|a| a != "--tray");
 
     let rt = tokio::runtime::Runtime::new()?;
-
-    let app_state = Arc::new(RwLock::new(AppState::new_with_config(&cfg)));
-
-    let (state_change_tx, _dummy_rx) = tokio::sync::broadcast::channel::<()>(16);
-
-    // Spawn background poll loop.
-    let state_for_poll = app_state.clone();
-    let poll_tx = state_change_tx.clone();
-    rt.spawn(async move {
-        state::poll_loop(state_for_poll, poll_tx).await;
-    });
-
-    // Spawn VPN unit state watcher.
-    let state_for_vpn_watch = app_state.clone();
-    let vpn_watch_tx = state_change_tx.clone();
-    rt.spawn(async move {
-        state::watch_vpn_unit_state(state_for_vpn_watch, vpn_watch_tx).await;
-    });
-
-    // Spawn NetworkManager state watcher.
-    let state_for_nm_watch = app_state.clone();
-    rt.spawn(async move {
-        state::watch_network_manager(state_for_nm_watch).await;
-    });
-
-    let (tray_tx, tray_rx) = async_channel::bounded::<TrayMessage>(8);
-
-    let state_for_tray = app_state.clone();
-    let tray_handle = rt.handle().clone();
-    let state_rx = state_change_tx.subscribe();
-    std::thread::spawn(move || {
-        tray::run_tray(state_for_tray, tray_tx, tray_handle, state_rx);
-    });
+    let ctx = Ctx::new(rt.handle().clone());
+    rt.spawn(state::poll_loop(ctx.clone()));
 
     let _guard = rt.enter();
 
-    let app = adw::Application::builder()
-        .application_id("com.vex.vpn.nixos")
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
+    register_app_actions(&app);
 
-    register_app_actions(&app, app_state.clone());
-
-    let state_for_ui = app_state.clone();
-    app.connect_activate(move |app| {
-        if !app.windows().is_empty() {
-            if let Some(win) = app.active_window() {
-                win.present();
-            }
-            return;
-        }
-
-        if let Some(display) = gtk4::gdk::Display::default() {
-            gtk4::IconTheme::for_display(&display).add_resource_path("/com/vex/vpn/icons");
-        }
-
-        let rx = tray_rx.clone();
-        build_and_show_main_window(app, state_for_ui.clone(), Some(rx));
-    });
-
-    std::process::exit(app.run().into());
-}
-
-fn build_and_show_main_window(
-    app: &adw::Application,
-    state: Arc<RwLock<AppState>>,
-    rx: Option<async_channel::Receiver<TrayMessage>>,
-) {
-    let window = ui::build_ui(app, state, rx);
-    window.present();
-}
-
-fn register_app_actions(app: &adw::Application, state: Arc<RwLock<AppState>>) {
-    // Preferences action.
-    let prefs_action = gio::SimpleAction::new("preferences", None);
+    // Tray and its message pump live only in the primary instance; a second
+    // launch is forwarded here by GApplication and just activates.
     {
-        let app_ref = app.clone();
-        let state_ref = state.clone();
-        prefs_action.connect_activate(move |_, _| {
-            if let Some(win) = app_ref.active_window() {
-                if let Ok(adw_win) = win.downcast::<adw::ApplicationWindow>() {
-                    let prefs_win = ui_prefs::build_preferences_window(&adw_win, state_ref.clone());
-                    prefs_win.present();
-                }
+        let ctx = ctx.clone();
+        app.connect_startup(move |app| {
+            if let Some(display) = gtk4::gdk::Display::default() {
+                gtk4::IconTheme::for_display(&display).add_resource_path("/com/vex/vpn/icons");
             }
+            let (tray_tx, tray_rx) = async_channel::bounded::<TrayMessage>(8);
+            tray::spawn(ctx.clone(), tray_tx);
+            let app = app.clone();
+            glib::spawn_future_local(async move {
+                while let Ok(msg) = tray_rx.recv().await {
+                    match msg {
+                        TrayMessage::ShowWindow => app.activate(),
+                        TrayMessage::ShowRegions => {
+                            app.activate();
+                            if let Some(win) = app.active_window() {
+                                ActionGroupExt::activate_action(
+                                    &win,
+                                    "show-page",
+                                    Some(&"regions".to_variant()),
+                                );
+                            }
+                        }
+                        TrayMessage::Quit => app.quit(),
+                    }
+                }
+            });
         });
     }
-    app.add_action(&prefs_action);
 
+    let skip_first_window = Rc::new(Cell::new(tray_mode));
+    let hold = Rc::new(RefCell::new(None));
+    app.connect_activate(move |app| {
+        if let Some(win) = app.windows().first() {
+            win.present();
+            return;
+        }
+        if skip_first_window.replace(false) {
+            // Stay alive with no window; closing a window later does not quit.
+            hold.replace(Some(app.hold()));
+            return;
+        }
+        ui::build_ui(app, ctx.clone()).present();
+    });
+
+    let code = app.run_with_args(&args);
+    std::process::exit(code.into());
+}
+
+fn register_app_actions(app: &adw::Application) {
     // Keyboard shortcuts action.
     let shortcuts_action = gio::SimpleAction::new("show-shortcuts", None);
     {

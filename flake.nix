@@ -1,204 +1,61 @@
 {
-  description = "Universal VPN GUI for NixOS — GTK4/Rust frontend for WireGuard and OpenVPN via systemd/NetworkManager";
+  description = "vex-vpn — GTK4/libadwaita GUI for the vexos-vpn PIA backend";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    crane = {
-      url = "github:ipetkov/crane";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # Same branch as vexos-nix; consumers override with
+    # `inputs.vex-vpn.inputs.nixpkgs.follows = "nixpkgs"`.
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    # crane has no inputs of its own (nothing to follow).
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay, crane }:
+  outputs = { self, nixpkgs, crane }:
     let
-      # ── NixOS modules ───────────────────────────────────────────────────────
-      # vpn backend: universal WireGuard/OpenVPN module. Can be used standalone without the GUI.
-      vpnModule = ./nix/module-vpn.nix;
+      systems = [ "x86_64-linux" "aarch64-linux" ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # vex-vpn frontend: the GTK4/Rust GUI.
-      guiModule = { config, lib, pkgs, ... }:
-        import ./nix/module-gui.nix { inherit config lib pkgs self; };
+      mkVexVpn = pkgs: import ./nix/package.nix { inherit pkgs crane; src = ./.; };
+    in
+    {
+      packages = forAllSystems (pkgs: rec {
+        vex-vpn = mkVexVpn pkgs;
+        default = vex-vpn;
+      });
 
-      # Combined module — the recommended entry point for most users.
-      # Imports both vpn + gui so users only need one line in their system config.
-      combinedModule = { config, lib, pkgs, ... }: {
-        imports = [
-          vpnModule
-          (import ./nix/module-gui.nix { inherit config lib pkgs self; })
-        ];
-      };
+      overlays.default = final: _prev: { vex-vpn = mkVexVpn final; };
 
-    in flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ (import rust-overlay) ];
-        };
+      nixosModules.default = import ./nix/module.nix { inherit mkVexVpn; };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "clippy" ];
-        };
-
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-
-        # Build inputs required to compile gtk4-rs and libadwaita bindings
-        nativeBuildInputs = with pkgs; [
-          pkg-config
-          wrapGAppsHook4
-          gobject-introspection
-          glib   # provides glib-compile-resources for build.rs
-        ];
-
-        buildInputs = with pkgs; [
-          gtk4
-          libadwaita
-          glib
-          gdk-pixbuf
-          pango
-          cairo
-          atk
-          dbus
-          openssl
-        ];
-
-        commonArgs = {
-          src = let
-            certFilter = path: type:
-              type == "directory" ||
-              builtins.match ".*\.crt$"             path != null ||
-              builtins.match ".*\.ui$"              path != null ||
-              builtins.match ".*\.policy$"          path != null ||
-              builtins.match ".*\.svg$"             path != null ||
-              builtins.match ".*\.png$"             path != null ||
-              builtins.match ".*\.gresource\.xml$" path != null;
-            srcFilter = path: type:
-              (certFilter path type) || (craneLib.filterCargoSources path type);
-          in pkgs.lib.cleanSourceWith {
-            src = craneLib.path ./.;
-            filter = srcFilter;
-          };
-          inherit nativeBuildInputs buildInputs;
-          PKG_CONFIG_PATH = pkgs.lib.makeSearchPathOutput "dev" "lib/pkgconfig" buildInputs;
-        };
-
-        # Build dependencies separately for faster rebuilds (Crane pattern)
-        # pname/version here are used only to name the Nix store path for this
-        # derivation; bumping the version forces a fresh rebuild when new source
-        # modules are added (e.g. src/backend/, src/parser/, src/profile.rs).
-        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-          pname = "vex-vpn-deps";
-          version = "0.2.0";
-          preBuild = ''
-            export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
-          '';
-        });
-
-        vex-vpn = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
-          pname = "vex-vpn";
-
-          preBuild = ''
-            export GI_TYPELIB_PATH=${pkgs.gtk4}/lib/girepository-1.0:${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.glib}/lib/girepository-1.0:${pkgs.pango}/lib/girepository-1.0:${pkgs.cairo}/lib/girepository-1.0:${pkgs.atk}/lib/girepository-1.0:${pkgs.gdk-pixbuf}/lib/girepository-1.0
-          '';
-
-          postInstall = ''
-            # Helper binary (polkit-gated nft operations, runs as root)
-            mkdir -p $out/libexec
-            cp target/release/vex-vpn-helper $out/libexec/vex-vpn-helper
-
-            # Polkit action file — substitute actual store path into the XML
-            mkdir -p $out/share/polkit-1/actions
-            substitute nix/polkit-vex-vpn.policy \
-              $out/share/polkit-1/actions/org.vex-vpn.helper.policy \
-              --replace-fail '@HELPER_PATH@' "$out/libexec/vex-vpn-helper"
-
-            # Bundled icons
-            install -Dm644 assets/icons/vpn.png \
-              $out/share/icons/hicolor/256x256/apps/vex-vpn.png
-            for icon in network-vpn-symbolic network-vpn-disabled-symbolic \
-                        network-vpn-acquiring-symbolic network-vpn-no-route-symbolic; do
-              install -Dm644 assets/icons/hicolor/symbolic/apps/''${icon}.svg \
-                $out/share/icons/hicolor/symbolic/apps/''${icon}.svg
-            done
-            install -Dm644 assets/icons/icons.gresource.xml \
-              $out/share/vex-vpn/icons.gresource.xml
-
-            # Desktop entry
-            mkdir -p $out/share/applications
-            cat > $out/share/applications/vex-vpn.desktop << EOF
-            [Desktop Entry]
-            Type=Application
-            Name=vex-vpn
-            Comment=Universal VPN client for NixOS
-            Exec=vex-vpn
-            Icon=vex-vpn
-            Categories=Network;VPN;
-            StartupNotify=true
-            EOF
-
-            # Systemd user service (auto-start the GUI on login)
-            mkdir -p $out/lib/systemd/user
-            cat > $out/lib/systemd/user/vex-vpn.service << EOF
-            [Unit]
-            Description=vex-vpn Universal VPN GUI
-            After=graphical-session.target
-
-            [Service]
-            Type=simple
-            ExecStart=%h/.nix-profile/bin/vex-vpn
-            Restart=on-failure
-            RestartSec=3
-
-            [Install]
-            WantedBy=graphical-session.target
-            EOF
-          '';
-        });
-
-      in {
-        packages = {
-          inherit vex-vpn;
-          default = vex-vpn;
-        };
-
-        devShells.default = pkgs.mkShell {
-          inputsFrom = [ vex-vpn ];
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.default ];
           packages = with pkgs; [
-            rustToolchain
+            cargo
+            rustc
+            clippy
+            rustfmt
             rust-analyzer
             cargo-watch
-            cargo-expand
           ];
-          # Make GTK introspection available during `cargo run`
+          RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           shellHook = ''
-            export GI_TYPELIB_PATH=${pkgs.libadwaita}/lib/girepository-1.0:${pkgs.gtk4}/lib/girepository-1.0
             export GSK_RENDERER=cairo
           '';
         };
+      });
 
-        checks = {
-          inherit vex-vpn;
+      checks = forAllSystems (pkgs:
+        let
+          pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          inherit (pkg.passthru) craneLib commonArgs cargoArtifacts;
+        in
+        {
+          vex-vpn = pkg;
           clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";
           });
           fmt = craneLib.cargoFmt { src = craneLib.path ./.; };
-        };
-      }
-    ) // {
-      # ── NixOS modules (system-independent) ──────────────────────────────────
-      # Most users: import nixosModules.default — gets both vpn backend + gui.
-      # Advanced:   import nixosModules.vpn alone (headless/server use).
-      #             import nixosModules.vex-vpn alone (if you manage vpn separately).
-      nixosModules = {
-        default  = combinedModule;
-        vpn      = vpnModule;
-        vex-vpn  = guiModule;
-      };
+        });
     };
 }

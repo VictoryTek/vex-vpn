@@ -1,7 +1,7 @@
-use crate::state::{AppState, ConnectionStatus};
+use crate::dbus::{self, UnitError};
+use crate::state::{AppState, Ctx};
 use ksni::Tray;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use vex_vpn::vexos::{KillSwitchMode, VpnState};
 
 // ---------------------------------------------------------------------------
 // Messages sent from the tray thread to the GTK main thread.
@@ -9,25 +9,51 @@ use tokio::sync::RwLock;
 
 pub enum TrayMessage {
     ShowWindow,
+    ShowRegions,
     Quit,
 }
 
 // ---------------------------------------------------------------------------
-// The tray runs on its own OS thread. It holds a Handle to the main Tokio
-// runtime so that spawned D-Bus tasks are driven by the main runtime's worker
-// threads rather than a stranded single-threaded runtime.
+// The tray runs on ksni's own thread and renders from a snapshot that is
+// pushed via `Handle::update` after every status poll. Actions are spawned on
+// the main Tokio runtime.
 // ---------------------------------------------------------------------------
 
 struct VexTray {
-    state: Arc<RwLock<AppState>>,
-    handle: tokio::runtime::Handle,
+    snap: AppState,
+    ctx: Ctx,
     tx: async_channel::Sender<TrayMessage>,
 }
 
 impl VexTray {
-    fn read_state(&self) -> AppState {
-        self.handle
-            .block_on(async { self.state.read().await.clone() })
+    fn state(&self) -> VpnState {
+        self.snap
+            .status
+            .as_ref()
+            .map(|s| s.state)
+            .unwrap_or_default()
+    }
+
+    fn unit_action(&self, what: &'static str, fut: impl std::future::Future<Output = Result<(), UnitError>> + Send + 'static) {
+        let ctx = self.ctx.clone();
+        self.ctx.spawn(async move {
+            match fut.await {
+                Ok(()) | Err(UnitError::Cancelled) => {}
+                Err(e) => {
+                    tracing::warn!("tray: {what} failed: {e}");
+                    let body = format!("{what} failed: {e}");
+                    tokio::task::spawn_blocking(move || {
+                        let _ = notify_rust::Notification::new()
+                            .appname("vex-vpn")
+                            .summary("vex-vpn")
+                            .body(&body)
+                            .icon("network-vpn-no-route-symbolic")
+                            .show();
+                    });
+                }
+            }
+            ctx.poke();
+        });
     }
 }
 
@@ -37,99 +63,173 @@ impl Tray for VexTray {
     }
 
     fn title(&self) -> String {
-        let s = self.read_state();
-        match &s.status {
-            ConnectionStatus::Connected => s
-                .active_profile()
-                .map(|p| format!("vex-vpn — {}", p.name))
-                .unwrap_or_else(|| "vex-vpn — Connected".to_string()),
-            ConnectionStatus::Stale(_) => "vex-vpn — Reconnecting\u{2026}".to_string(),
-            other => format!("vex-vpn — {}", other.label()),
+        if self.snap.backend.is_none() {
+            return "vex-vpn — backend not installed".to_string();
+        }
+        match &self.snap.status {
+            Some(s) if s.state == VpnState::Connected => {
+                format!("vex-vpn — {}", s.region_name)
+            }
+            Some(s) => format!("vex-vpn — {}", s.state.label()),
+            None => "vex-vpn".to_string(),
         }
     }
 
     fn icon_name(&self) -> String {
-        let s = self.read_state();
-        match s.status {
-            ConnectionStatus::Connected => "network-vpn-symbolic",
-            ConnectionStatus::Connecting => "network-vpn-acquiring-symbolic",
-            ConnectionStatus::Stale(_) => "network-vpn-acquiring-symbolic",
-            ConnectionStatus::KillSwitchActive => "network-vpn-no-route-symbolic",
-            _ => "network-vpn-disabled-symbolic",
+        match self.state() {
+            VpnState::Connected => "network-vpn-symbolic",
+            VpnState::Connecting => "network-vpn-acquiring-symbolic",
+            VpnState::Error => "network-vpn-no-route-symbolic",
+            VpnState::Disconnected | VpnState::Unknown => "network-vpn-disabled-symbolic",
         }
         .to_string()
     }
 
-    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        let s = self.read_state();
-        let is_connected = s.status.is_connected();
-        let is_connecting = matches!(s.status, ConnectionStatus::Connecting);
-        let profile_iface = s
-            .active_profile()
-            .map(|p| p.effective_interface().to_string())
-            .unwrap_or_else(|| "wg0".to_string());
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.tx.try_send(TrayMessage::ShowWindow);
+    }
 
-        vec![
-            ksni::MenuItem::Standard(ksni::menu::StandardItem {
-                label: "Open vex-vpn".to_string(),
-                activate: Box::new(|tray: &mut VexTray| {
-                    let _ = tray.tx.try_send(TrayMessage::ShowWindow);
-                }),
-                ..Default::default()
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::{CheckmarkItem, StandardItem};
+
+        let open = StandardItem {
+            label: "Open vex-vpn".to_string(),
+            activate: Box::new(|t: &mut VexTray| {
+                let _ = t.tx.try_send(TrayMessage::ShowWindow);
             }),
-            ksni::MenuItem::Separator,
-            ksni::MenuItem::Standard(ksni::menu::StandardItem {
-                label: if is_connected || is_connecting {
-                    "Disconnect".to_string()
+            ..Default::default()
+        };
+        let quit = StandardItem {
+            label: "Quit".to_string(),
+            activate: Box::new(|t: &mut VexTray| {
+                let _ = t.tx.try_send(TrayMessage::Quit);
+            }),
+            ..Default::default()
+        };
+
+        let Some(status) = self.snap.status.clone() else {
+            let label = if self.snap.backend.is_none() {
+                "vexos-vpn backend not installed"
+            } else {
+                "Status unavailable"
+            };
+            return vec![
+                StandardItem {
+                    label: label.to_string(),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
+                ksni::MenuItem::Separator,
+                open.into(),
+                quit.into(),
+            ];
+        };
+
+        let mut items: Vec<ksni::MenuItem<Self>> = vec![StandardItem {
+            label: status.state.label().to_string(),
+            enabled: false,
+            ..Default::default()
+        }
+        .into()];
+
+        let unit_active = self.snap.unit_active;
+        let needs_sign_in = self.snap.needs_sign_in();
+        items.push(
+            StandardItem {
+                label: if unit_active {
+                    "Disconnect"
+                } else if needs_sign_in {
+                    "Sign in to PIA\u{2026}"
                 } else {
-                    "Connect".to_string()
-                },
-                activate: Box::new(move |tray: &mut VexTray| {
-                    let iface = profile_iface.clone();
-                    if is_connected || is_connecting {
-                        tray.handle.spawn(async move {
-                            if let Err(e) = crate::dbus::stop_wireguard_unit(&iface).await {
-                                tracing::error!("disconnect failed: {}", e);
-                            }
-                        });
+                    "Connect"
+                }
+                .to_string(),
+                activate: Box::new(move |t: &mut VexTray| {
+                    if unit_active {
+                        t.unit_action("Disconnect", dbus::stop_unit(dbus::VPN_UNIT));
+                    } else if needs_sign_in {
+                        let _ = t.tx.try_send(TrayMessage::ShowWindow);
                     } else {
-                        tray.handle.spawn(async move {
-                            if let Err(e) = crate::dbus::start_wireguard_unit(&iface).await {
-                                tracing::error!("connect failed: {}", e);
-                            }
-                        });
+                        t.unit_action("Connect", dbus::start_unit(dbus::VPN_UNIT));
                     }
                 }),
                 ..Default::default()
-            }),
-            ksni::MenuItem::Separator,
-            ksni::MenuItem::Standard(ksni::menu::StandardItem {
-                label: "Quit".to_string(),
-                activate: Box::new(|tray: &mut VexTray| {
-                    let _ = tray.tx.try_send(TrayMessage::Quit);
+            }
+            .into(),
+        );
+
+        if status.killswitch_mode != KillSwitchMode::Off {
+            let on = status.killswitch;
+            items.push(
+                CheckmarkItem {
+                    label: "Kill switch".to_string(),
+                    checked: on,
+                    activate: Box::new(move |t: &mut VexTray| {
+                        if on {
+                            t.unit_action(
+                                "Kill switch off",
+                                dbus::stop_unit(dbus::KILLSWITCH_UNIT),
+                            );
+                        } else {
+                            t.unit_action(
+                                "Kill switch on",
+                                dbus::start_unit(dbus::KILLSWITCH_UNIT),
+                            );
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
+        let region = if status.region_setting == vex_vpn::vexos::AUTO_REGION {
+            if status.region_name.is_empty() {
+                "Automatic (fastest)".to_string()
+            } else {
+                format!("Automatic \u{2014} {}", status.region_name)
+            }
+        } else if status.region_name.is_empty() {
+            status.region_setting.clone()
+        } else {
+            status.region_name.clone()
+        };
+        items.push(
+            StandardItem {
+                label: format!("Region: {}", region),
+                activate: Box::new(|t: &mut VexTray| {
+                    let _ = t.tx.try_send(TrayMessage::ShowRegions);
                 }),
                 ..Default::default()
-            }),
-        ]
+            }
+            .into(),
+        );
+
+        items.push(ksni::MenuItem::Separator);
+        items.push(open.into());
+        items.push(quit.into());
+        items
     }
 }
 
-pub fn run_tray(
-    state: Arc<RwLock<AppState>>,
-    tx: async_channel::Sender<TrayMessage>,
-    handle: tokio::runtime::Handle,
-    mut state_change_rx: tokio::sync::broadcast::Receiver<()>,
-) {
-    let tray = VexTray {
-        state,
-        handle: handle.clone(),
+/// Start the tray service and keep its snapshot in sync with `ctx.state`.
+pub fn spawn(ctx: Ctx, tx: async_channel::Sender<TrayMessage>) {
+    let service = ksni::TrayService::new(VexTray {
+        snap: AppState::default(),
+        ctx: ctx.clone(),
         tx,
-    };
+    });
+    let handle = service.handle();
+    service.spawn();
 
-    ksni::TrayService::new(tray).spawn();
-
-    handle.block_on(async move {
+    let mut changed = ctx.changed.subscribe();
+    let state = ctx.state.clone();
+    ctx.spawn(async move {
         use tokio::sync::broadcast::error::RecvError;
-        while let Ok(()) | Err(RecvError::Lagged(_)) = state_change_rx.recv().await {}
+        while let Ok(()) | Err(RecvError::Lagged(_)) = changed.recv().await {
+            let snap = state.read().await.clone();
+            handle.update(move |t| t.snap = snap);
+        }
     });
 }

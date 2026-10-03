@@ -1,0 +1,1 @@
+[{"id":"de-frankfurt","name":"DE Frankfurt","country":"DE","port_forward":true,"latency_s":0.021},{"id":"us_east","name":"US East","country":"US","port_forward":false,"latency_s":null},{"id":"uk","name":"UK London","country":"GB","port_forward":true,"latency_s":0.034}]

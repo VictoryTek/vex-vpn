@@ -1,10 +1,12 @@
-use crate::state::{format_bytes, AppState, ConnectionStatus};
-use crate::tray::TrayMessage;
+use crate::dbus::{self, UnitError};
+use crate::state::{AppState, Ctx};
 use adw::prelude::*;
 use gtk4::prelude::*;
 use libadwaita as adw;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::cell::Cell;
+use std::future::Future;
+use std::rc::Rc;
+use vex_vpn::vexos::{format_bytes, format_duration, protocol_label, KillSwitchMode, VpnState};
 
 // ---------------------------------------------------------------------------
 // CSS
@@ -83,6 +85,11 @@ window.vex-window { background-color: #0d1117; }
     border: 2px solid rgba(255,180,0,0.7);
     color: #ffb400;
 }
+.connect-btn.state-error {
+    background: #1f0d0d;
+    border: 2px solid rgba(255,80,80,0.7);
+    color: #ff7878;
+}
 
 .status-pill {
     border-radius: 9999px;
@@ -98,114 +105,147 @@ window.vex-window { background-color: #0d1117; }
 "#;
 
 // ---------------------------------------------------------------------------
-// Live widget handles
+// Shared UI handle for the pages and dialogs
 // ---------------------------------------------------------------------------
 
-struct LiveWidgets {
-    status_pill: gtk4::Label,
-    connect_btn: gtk4::Button,
-    btn_icon: gtk4::Image,
-    btn_label: gtk4::Label,
-    profile_label: gtk4::Label,
-    ip_label: gtk4::Label,
-    dl_value: gtk4::Label,
-    ul_value: gtk4::Label,
+#[derive(Clone)]
+pub struct Ui {
+    pub ctx: Ctx,
+    pub window: adw::ApplicationWindow,
+    toasts: adw::ToastOverlay,
+    /// A pkexec action is waiting (only one admin prompt at a time).
+    pub priv_busy: Rc<Cell<bool>>,
+}
+
+impl Ui {
+    pub fn toast(&self, msg: &str) {
+        self.toasts.add_toast(adw::Toast::new(msg));
+    }
+
+    /// Run a systemd unit action off the main thread; report the outcome as
+    /// a toast and re-poll. Calls `done` on the main thread afterwards.
+    pub fn run_unit<F>(&self, fut: F, ok_msg: Option<String>, done: impl FnOnce() + 'static)
+    where
+        F: Future<Output = Result<(), UnitError>> + Send + 'static,
+    {
+        let ui = self.clone();
+        glib::spawn_future_local(async move {
+            match ui.ctx.run(fut).await {
+                Ok(()) => {
+                    if let Some(msg) = ok_msg {
+                        ui.toast(&msg);
+                    }
+                }
+                Err(UnitError::Cancelled) => ui.toast("Authentication cancelled"),
+                Err(e) => ui.toast(&e.to_string()),
+            }
+            ui.ctx.poke();
+            done();
+        });
+    }
+}
+
+/// Region id → display name, using the loaded region list when available.
+pub fn region_display(snap: &AppState, id: &str) -> String {
+    if id == vex_vpn::vexos::AUTO_REGION {
+        return "Automatic (fastest)".to_string();
+    }
+    snap.regions
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|list| list.iter().find(|r| r.id == id))
+        .map(|r| r.name.clone())
+        .unwrap_or_else(|| id.to_string())
 }
 
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn build_ui(
-    app: &adw::Application,
-    state: Arc<RwLock<AppState>>,
-    rx: Option<async_channel::Receiver<TrayMessage>>,
-) -> adw::ApplicationWindow {
-    let provider = gtk4::CssProvider::new();
-    provider.load_from_data(APP_CSS);
-    gtk4::style_context_add_provider_for_display(
-        &gtk4::gdk::Display::default().expect("no display"),
-        &provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
+    static CSS: std::sync::Once = std::sync::Once::new();
+    CSS.call_once(|| {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_data(APP_CSS);
+        gtk4::style_context_add_provider_for_display(
+            &gtk4::gdk::Display::default().expect("no display"),
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    });
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("vex-vpn")
-        .default_width(760)
-        .default_height(540)
-        .resizable(false)
+        .default_width(820)
+        .default_height(620)
         .build();
     window.add_css_class("vex-window");
 
-    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let (sidebar_box, history_btn, profiles_btn, dash_btn) = build_sidebar();
-    root.append(&sidebar_box);
-
     let toast_overlay = adw::ToastOverlay::new();
+    let ui = Ui {
+        ctx: ctx.clone(),
+        window: window.clone(),
+        toasts: toast_overlay.clone(),
+        priv_busy: Rc::new(Cell::new(false)),
+    };
 
-    let (main_page, live) = build_main_page(state.clone(), window.clone(), toast_overlay.clone());
-
-    let nav_view = adw::NavigationView::new();
-    let dashboard_page = adw::NavigationPage::builder()
-        .title("Dashboard")
-        .child(&main_page)
-        .build();
-    nav_view.push(&dashboard_page);
-
-    // Dashboard button → pop back to the root dashboard page.
+    // Poll faster while the window is on screen.
     {
-        let nav_c = nav_view.clone();
-        let page_c = dashboard_page.clone();
-        let dash_c = dash_btn.clone();
-        let prof_c = profiles_btn.clone();
-        let hist_c = history_btn.clone();
-        dash_btn.connect_clicked(move |_| {
-            nav_c.pop_to_page(&page_c);
-            dash_c.add_css_class("active");
-            prof_c.remove_css_class("active");
-            hist_c.remove_css_class("active");
-        });
+        let c = ctx.clone();
+        window.connect_map(move |_| c.set_window_visible(true));
+        let c = ctx.clone();
+        window.connect_unmap(move |_| c.set_window_visible(false));
     }
 
-    // Profiles button → push profiles page.
+    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    let (sidebar, nav) = build_sidebar();
+    root.append(&sidebar);
+
+    let dashboard = Dashboard::new(&ui);
+    let regions = crate::ui_regions::RegionsPage::new(&ui);
+    let settings = crate::ui_settings::SettingsPage::new(&ui);
+    let missing = build_missing_page(&ctx);
+
+    let stack = gtk4::Stack::new();
+    stack.set_hexpand(true);
+    stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+    stack.add_named(&dashboard.root, Some("dashboard"));
+    stack.add_named(&regions.root, Some("regions"));
+    stack.add_named(&settings.root, Some("settings"));
+    stack.add_named(&missing, Some("missing"));
+    root.append(&stack);
+
+    // `win.show-page('<name>')` — sidebar buttons and the tray use this.
+    let show_page = gio::SimpleAction::new("show-page", Some(glib::VariantTy::STRING));
     {
-        let nav_c = nav_view.clone();
-        let state_c = state.clone();
-        let dash_c = dash_btn.clone();
-        let prof_c = profiles_btn.clone();
-        let hist_c = history_btn.clone();
-        profiles_btn.connect_clicked(move |_| {
-            let page = crate::ui_profiles::build_profiles_page(state_c.clone(), nav_c.clone());
-            nav_c.push(&page);
-            prof_c.add_css_class("active");
-            dash_c.remove_css_class("active");
-            hist_c.remove_css_class("active");
+        let stack = stack.clone();
+        let nav = nav.clone();
+        show_page.connect_activate(move |_, param| {
+            let Some(name) = param.and_then(|p| p.str()) else {
+                return;
+            };
+            if stack.visible_child_name().as_deref() == Some("missing") {
+                return;
+            }
+            stack.set_visible_child_name(name);
+            for (page, btn) in &nav {
+                if *page == name {
+                    btn.add_css_class("active");
+                } else {
+                    btn.remove_css_class("active");
+                }
+            }
         });
     }
-
-    // History button → push history page.
-    {
-        let nav_c = nav_view.clone();
-        let dash_c = dash_btn.clone();
-        let prof_c = profiles_btn.clone();
-        let hist_c = history_btn.clone();
-        history_btn.connect_clicked(move |_| {
-            nav_c.push(&build_history_page());
-            hist_c.add_css_class("active");
-            dash_c.remove_css_class("active");
-            prof_c.remove_css_class("active");
-        });
+    window.add_action(&show_page);
+    for (page, btn) in &nav {
+        btn.set_action_name(Some("win.show-page"));
+        btn.set_action_target_value(Some(&page.to_variant()));
     }
-
-    nav_view.set_hexpand(true);
-    root.append(&nav_view);
 
     let header = adw::HeaderBar::new();
     header.set_show_title(false);
-    header.set_show_end_title_buttons(true);
-    header.set_show_start_title_buttons(true);
-
     let menu_button = gtk4::MenuButton::builder()
         .icon_name("open-menu-symbolic")
         .tooltip_text("Main menu")
@@ -217,63 +257,43 @@ pub fn build_ui(
     toolbar_view.add_top_bar(&header);
     toast_overlay.set_child(Some(&root));
     toolbar_view.set_content(Some(&toast_overlay));
-
     window.set_content(Some(&toolbar_view));
 
-    // Drain tray→window messages.
-    if let Some(rx) = rx {
-        let window_ref = window.clone();
-        let app_ref = app.clone();
-        glib::spawn_future_local(async move {
-            while let Ok(msg) = rx.recv().await {
-                match msg {
-                    TrayMessage::ShowWindow => window_ref.present(),
-                    TrayMessage::Quit => app_ref.quit(),
-                }
-            }
-        });
-    }
-
-    // Detect whether a system kill switch service is already active and notify.
+    // Re-render after every status poll until the window is closed.
+    let closed = Rc::new(Cell::new(false));
     {
-        let state_c = state.clone();
-        let toast_c = toast_overlay.clone();
-        glib::spawn_future_local(async move {
-            let service = state_c.read().await.kill_switch_service_name.clone();
-            let unit = format!("{}.service", service);
-            if let Ok(status) = crate::dbus::get_service_status(&unit).await {
-                if status == "active" {
-                    let toast = adw::Toast::new(
-                        "System kill switch is already active — vex-vpn is deferring to it.",
-                    );
-                    toast.set_timeout(8);
-                    toast_c.add_toast(toast);
-                }
-            }
+        let closed = closed.clone();
+        window.connect_close_request(move |_| {
+            closed.set(true);
+            glib::Propagation::Proceed
         });
     }
-
-    // Refresh UI every 3 seconds.
-    glib::timeout_add_seconds_local(3, move || {
-        let state = state.clone();
-        let live = LiveWidgets {
-            status_pill: live.status_pill.clone(),
-            connect_btn: live.connect_btn.clone(),
-            btn_icon: live.btn_icon.clone(),
-            btn_label: live.btn_label.clone(),
-            profile_label: live.profile_label.clone(),
-            ip_label: live.ip_label.clone(),
-            dl_value: live.dl_value.clone(),
-            ul_value: live.ul_value.clone(),
-        };
-        glib::spawn_future_local(async move {
-            let s = state.read().await.clone();
-            refresh_widgets(&live, &s);
-        });
-        glib::ControlFlow::Continue
+    let mut changed = ctx.changed.subscribe();
+    glib::spawn_future_local(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            let snap = ctx.snapshot().await;
+            if closed.get() {
+                break;
+            }
+            let present = snap.backend.is_some();
+            sidebar_nav_sensitive(&nav, present);
+            if !present {
+                stack.set_visible_child_name("missing");
+            } else if stack.visible_child_name().as_deref() == Some("missing") {
+                stack.set_visible_child_name("dashboard");
+            }
+            dashboard.update(&snap);
+            regions.update(&snap);
+            settings.update(&snap);
+            match changed.recv().await {
+                Ok(()) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
     });
+    ctx.poke();
 
-    window.present();
     window
 }
 
@@ -285,7 +305,6 @@ pub fn build_primary_menu() -> gio::Menu {
     let menu = gio::Menu::new();
 
     let view_section = gio::Menu::new();
-    view_section.append(Some("Preferences"), Some("app.preferences"));
     view_section.append(Some("Keyboard Shortcuts"), Some("app.show-shortcuts"));
     menu.append_section(None, &view_section);
 
@@ -315,9 +334,10 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
         .transient_for(parent)
         .modal(true)
         .application_name("vex-vpn")
-        .application_icon("network-vpn-symbolic")
+        .application_icon("vex-vpn")
         .developer_name("vex-vpn contributors")
         .version(env!("CARGO_PKG_VERSION"))
+        .comments("Desktop app for vexos-vpn — PIA VPN and kill switch")
         .website("https://github.com/victorytek/vex-vpn")
         .license_type(gtk4::License::MitX11)
         .build();
@@ -328,7 +348,9 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button, gtk4::Button) {
+type Nav = Vec<(&'static str, gtk4::Button)>;
+
+fn build_sidebar() -> (gtk4::Box, Rc<Nav>) {
     let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     sidebar.add_css_class("vex-sidebar");
     sidebar.set_size_request(192, -1);
@@ -344,24 +366,31 @@ fn build_sidebar() -> (gtk4::Box, gtk4::Button, gtk4::Button, gtk4::Button) {
     logo_row.append(&logo_img);
     sidebar.append(&logo_row);
 
-    // Dashboard nav button.
-    let dash_btn = nav_button("go-home-symbolic", "Dashboard", true);
-    sidebar.append(&dash_btn);
+    let nav = vec![
+        (
+            "dashboard",
+            nav_button("go-home-symbolic", "Dashboard", true),
+        ),
+        (
+            "regions",
+            nav_button("network-server-symbolic", "Regions", false),
+        ),
+        (
+            "settings",
+            nav_button("emblem-system-symbolic", "Settings", false),
+        ),
+    ];
+    for (_, btn) in &nav {
+        sidebar.append(btn);
+    }
 
-    // Profiles nav button.
-    let profiles_btn = nav_button("network-server-symbolic", "Profiles", false);
-    sidebar.append(&profiles_btn);
+    (sidebar, Rc::new(nav))
+}
 
-    let spacer = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    spacer.set_vexpand(true);
-    sidebar.append(&spacer);
-
-    // History button at bottom.
-    let history_btn = nav_button("document-open-recent-symbolic", "History", false);
-    history_btn.set_margin_bottom(8);
-    sidebar.append(&history_btn);
-
-    (sidebar, history_btn, profiles_btn, dash_btn)
+fn sidebar_nav_sensitive(nav: &Nav, sensitive: bool) {
+    for (_, btn) in nav {
+        btn.set_sensitive(sensitive);
+    }
 }
 
 fn nav_button(icon: &str, label: &str, active: bool) -> gtk4::Button {
@@ -391,212 +420,420 @@ fn nav_button(icon: &str, label: &str, active: bool) -> gtk4::Button {
 }
 
 // ---------------------------------------------------------------------------
-// History page
+// Backend missing
 // ---------------------------------------------------------------------------
 
-fn build_history_page() -> adw::NavigationPage {
-    let list_box = gtk4::ListBox::new();
-    list_box.set_selection_mode(gtk4::SelectionMode::None);
-    list_box.add_css_class("boxed-list");
+fn build_missing_page(ctx: &Ctx) -> adw::StatusPage {
+    let check = gtk4::Button::with_label("Check again");
+    check.add_css_class("pill");
+    check.add_css_class("suggested-action");
+    check.set_halign(gtk4::Align::Center);
+    let c = ctx.clone();
+    check.connect_clicked(move |_| c.poke());
 
-    let placeholder = adw::ActionRow::new();
-    placeholder.set_title("Loading\u{2026}");
-    list_box.append(&placeholder);
-
-    let scroll = gtk4::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk4::PolicyType::Never)
-        .vscrollbar_policy(gtk4::PolicyType::Automatic)
-        .vexpand(true)
-        .child(&list_box)
-        .build();
-
-    let clamp = adw::Clamp::new();
-    clamp.set_child(Some(&scroll));
-    clamp.set_maximum_size(600);
-    clamp.set_margin_top(12);
-    clamp.set_margin_bottom(12);
-    clamp.set_margin_start(12);
-    clamp.set_margin_end(12);
-
-    let page = adw::NavigationPage::builder()
-        .title("Connection History")
-        .child(&clamp)
-        .build();
-
-    glib::spawn_future_local(async move {
-        let entries = tokio::task::spawn_blocking(|| crate::history::load_recent(50))
-            .await
-            .unwrap_or_default();
-
-        while let Some(child) = list_box.first_child() {
-            list_box.remove(&child);
-        }
-
-        if entries.is_empty() {
-            let row = adw::ActionRow::new();
-            row.set_title("No connections recorded yet");
-            list_box.append(&row);
-        } else {
-            for e in &entries {
-                let duration = crate::history::format_duration(e.ts_end.saturating_sub(e.ts_start));
-                let when = crate::history::format_timestamp(e.ts_start);
-                let row = adw::ActionRow::new();
-                row.set_title(&e.profile_name);
-                row.set_subtitle(&format!("{} \u{2014} {}", when, duration));
-                list_box.append(&row);
-            }
-        }
-    });
-
-    page
+    adw::StatusPage::builder()
+        .icon_name("network-vpn-disabled-symbolic")
+        .title("vexos-vpn backend not installed")
+        .description(
+            "vex-vpn is the desktop app for vexos-vpn, the VPN service that ships \
+             with vexos. Enable it in your vexos NixOS config (modules/vpn.nix) \
+             and rebuild.",
+        )
+        .child(&check)
+        .build()
 }
 
 // ---------------------------------------------------------------------------
-// Main dashboard page
+// Dashboard
 // ---------------------------------------------------------------------------
 
-fn build_main_page(
-    state: Arc<RwLock<AppState>>,
-    _window: adw::ApplicationWindow,
-    toasts: adw::ToastOverlay,
-) -> (gtk4::Box, LiveWidgets) {
-    let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    page.set_margin_top(28);
-    page.set_margin_bottom(28);
-    page.set_margin_start(28);
-    page.set_margin_end(28);
-    page.set_hexpand(true);
+#[derive(Clone, Copy, PartialEq)]
+enum BannerAction {
+    None,
+    SignIn,
+    Retry,
+}
 
-    // ── Hero ──────────────────────────────────────────────────────────────
+struct Dashboard {
+    root: gtk4::Box,
+    banner: adw::Banner,
+    banner_action: Rc<Cell<BannerAction>>,
+    sign_in_page: adw::StatusPage,
+    sign_in_btn: gtk4::Button,
+    hero: gtk4::Box,
+    status_pill: gtk4::Label,
+    connect_btn: gtk4::Button,
+    btn_icon: gtk4::Image,
+    btn_label: gtk4::Label,
+    region_label: gtk4::Label,
+    detail_label: gtk4::Label,
+    ks_chip: gtk4::Label,
+    reconnect_btn: gtk4::Button,
+    stats: gtk4::Grid,
+    dl_value: gtk4::Label,
+    ul_value: gtk4::Label,
+}
 
-    let hero = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
-    hero.set_halign(gtk4::Align::Center);
-    hero.set_margin_bottom(28);
+impl Dashboard {
+    fn new(ui: &Ui) -> Self {
+        let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        root.set_hexpand(true);
 
-    let status_pill = gtk4::Label::new(Some("● DISCONNECTED"));
-    status_pill.set_css_classes(&["status-pill", "state-disconnected"]);
-    status_pill.set_halign(gtk4::Align::Center);
-    hero.append(&status_pill);
-
-    let connect_btn = gtk4::Button::new();
-    connect_btn.set_css_classes(&["connect-btn", "state-disconnected"]);
-    connect_btn.set_halign(gtk4::Align::Center);
-
-    let btn_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    btn_inner.set_halign(gtk4::Align::Center);
-    btn_inner.set_valign(gtk4::Align::Center);
-
-    let btn_icon = gtk4::Image::from_icon_name("network-vpn-disabled-symbolic");
-    btn_icon.set_pixel_size(28);
-
-    let btn_label = gtk4::Label::new(Some("CONNECT"));
-    btn_label.set_css_classes(&["section-title"]);
-
-    btn_inner.append(&btn_icon);
-    btn_inner.append(&btn_label);
-    connect_btn.set_child(Some(&btn_inner));
-
-    // Button click — toggle connect/disconnect.
-    {
-        let state_c = state.clone();
-        let pill_c = status_pill.clone();
-        let btn_c = connect_btn.clone();
-        let lbl_c = btn_label.clone();
-        let icon_c = btn_icon.clone();
-        let toast_c = toasts.clone();
-
-        connect_btn.connect_clicked(move |_| {
-            let state = state_c.clone();
-            let pill = pill_c.clone();
-            let btn = btn_c.clone();
-            let lbl = lbl_c.clone();
-            let icon = icon_c.clone();
-            let toast = toast_c.clone();
-
-            glib::spawn_future_local(async move {
-                let s = state.read().await;
-                let current = s.status.clone();
-                let iface = s
-                    .active_profile()
-                    .map(|p| p.effective_interface().to_string())
-                    .unwrap_or_else(|| "wg0".to_string());
-                drop(s);
-
-                match current {
-                    ConnectionStatus::Connected | ConnectionStatus::KillSwitchActive => {
-                        pill.set_label("● DISCONNECTING...");
-                        set_state_class(&pill, "state-connecting");
-                        set_state_class(&btn, "state-connecting");
-                        if let Err(e) = crate::dbus::stop_wireguard_unit(&iface).await {
-                            tracing::error!("disconnect: {}", e);
-                            toast.add_toast(adw::Toast::new(&format!("Disconnect failed: {e:#}")));
-                        }
-                    }
-                    ConnectionStatus::Connecting => {
-                        let _ = crate::dbus::stop_wireguard_unit(&iface).await;
-                    }
-                    _ => {
-                        pill.set_label("● CONNECTING...");
-                        set_state_class(&pill, "state-connecting");
-                        set_state_class(&btn, "state-connecting");
-                        lbl.set_label("CANCEL");
-                        icon.set_icon_name(Some("network-vpn-acquiring-symbolic"));
-
-                        if let Err(e) = crate::dbus::start_wireguard_unit(&iface).await {
-                            tracing::error!("connect: {}", e);
-                            set_state_class(&pill, "state-disconnected");
-                            set_state_class(&btn, "state-disconnected");
-                            lbl.set_label("CONNECT");
-                            icon.set_icon_name(Some("network-vpn-disabled-symbolic"));
-                            toast.add_toast(adw::Toast::new(&format!("Connect failed: {e:#}")));
-                        }
-                    }
-                }
+        // ── Error banner ─────────────────────────────────────────────────
+        let banner = adw::Banner::new("");
+        let banner_action = Rc::new(Cell::new(BannerAction::None));
+        {
+            let ui = ui.clone();
+            let action = banner_action.clone();
+            banner.connect_button_clicked(move |_| match action.get() {
+                BannerAction::SignIn => crate::ui_login::sign_in(&ui, false),
+                BannerAction::Retry => ui.run_unit(
+                    dbus::restart_unit(dbus::VPN_UNIT),
+                    Some("Retrying\u{2026}".to_string()),
+                    || {},
+                ),
+                BannerAction::None => {}
             });
-        });
+        }
+        root.append(&banner);
+
+        let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        page.set_margin_top(28);
+        page.set_margin_bottom(28);
+        page.set_margin_start(28);
+        page.set_margin_end(28);
+        page.set_vexpand(true);
+
+        // ── Sign-in call to action ───────────────────────────────────────
+        let sign_in_btn = gtk4::Button::with_label("Sign in to PIA");
+        sign_in_btn.add_css_class("pill");
+        sign_in_btn.add_css_class("suggested-action");
+        sign_in_btn.set_halign(gtk4::Align::Center);
+        {
+            let ui = ui.clone();
+            sign_in_btn.connect_clicked(move |_| crate::ui_login::sign_in(&ui, false));
+        }
+        let sign_in_page = adw::StatusPage::builder()
+            .icon_name("dialog-password-symbolic")
+            .title("Sign in to PIA")
+            .description(
+                "Enter your Private Internet Access username and password to use the VPN.",
+            )
+            .child(&sign_in_btn)
+            .vexpand(true)
+            .visible(false)
+            .build();
+        page.append(&sign_in_page);
+
+        // ── Hero ─────────────────────────────────────────────────────────
+        let hero = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
+        hero.set_halign(gtk4::Align::Center);
+        hero.set_margin_bottom(28);
+
+        let status_pill = gtk4::Label::new(Some("● DISCONNECTED"));
+        status_pill.set_css_classes(&["status-pill", "state-disconnected"]);
+        status_pill.set_halign(gtk4::Align::Center);
+        hero.append(&status_pill);
+
+        let connect_btn = gtk4::Button::new();
+        connect_btn.set_css_classes(&["connect-btn", "state-disconnected"]);
+        connect_btn.set_halign(gtk4::Align::Center);
+
+        let btn_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+        btn_inner.set_halign(gtk4::Align::Center);
+        btn_inner.set_valign(gtk4::Align::Center);
+        let btn_icon = gtk4::Image::from_icon_name("network-vpn-disabled-symbolic");
+        btn_icon.set_pixel_size(28);
+        let btn_label = gtk4::Label::new(Some("CONNECT"));
+        btn_label.set_css_classes(&["section-title"]);
+        btn_inner.append(&btn_icon);
+        btn_inner.append(&btn_label);
+        connect_btn.set_child(Some(&btn_inner));
+
+        {
+            let ui = ui.clone();
+            connect_btn.connect_clicked(move |btn| {
+                let ui = ui.clone();
+                let btn = btn.clone();
+                glib::spawn_future_local(async move {
+                    let snap = ui.ctx.snapshot().await;
+                    if !snap.unit_active && snap.needs_sign_in() {
+                        crate::ui_login::sign_in(&ui, false);
+                        return;
+                    }
+                    btn.set_sensitive(false);
+                    let b = btn.clone();
+                    let done = move || b.set_sensitive(true);
+                    if snap.unit_active {
+                        ui.run_unit(dbus::stop_unit(dbus::VPN_UNIT), None, done);
+                    } else {
+                        ui.run_unit(dbus::start_unit(dbus::VPN_UNIT), None, done);
+                    }
+                });
+            });
+        }
+        hero.append(&connect_btn);
+
+        let region_label = gtk4::Label::new(None);
+        region_label.set_css_classes(&["hero-profile"]);
+        region_label.set_halign(gtk4::Align::Center);
+        let detail_label = gtk4::Label::new(None);
+        detail_label.set_css_classes(&["hero-ip"]);
+        detail_label.set_halign(gtk4::Align::Center);
+        detail_label.set_wrap(true);
+        detail_label.set_justify(gtk4::Justification::Center);
+        hero.append(&region_label);
+        hero.append(&detail_label);
+
+        let chips = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        chips.set_halign(gtk4::Align::Center);
+        let ks_chip = gtk4::Label::new(None);
+        ks_chip.add_css_class("status-pill");
+        chips.append(&ks_chip);
+        let reconnect_btn = gtk4::Button::with_label("Reconnect");
+        reconnect_btn.add_css_class("pill");
+        {
+            let ui = ui.clone();
+            reconnect_btn.connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                let b = btn.clone();
+                ui.run_unit(
+                    dbus::restart_unit(dbus::VPN_UNIT),
+                    Some("Reconnecting\u{2026}".to_string()),
+                    move || b.set_sensitive(true),
+                );
+            });
+        }
+        chips.append(&reconnect_btn);
+        hero.append(&chips);
+        page.append(&hero);
+
+        // ── Live rates ───────────────────────────────────────────────────
+        let stats = gtk4::Grid::new();
+        stats.set_column_spacing(8);
+        stats.set_row_spacing(8);
+        stats.set_column_homogeneous(true);
+        let (dl_card, dl_value) = make_stat_card("DOWNLOAD", "0 B/s");
+        let (ul_card, ul_value) = make_stat_card("UPLOAD", "0 B/s");
+        stats.attach(&dl_card, 0, 0, 1, 1);
+        stats.attach(&ul_card, 1, 0, 1, 1);
+        page.append(&stats);
+
+        let scroll = gtk4::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vexpand(true)
+            .child(&page)
+            .build();
+        root.append(&scroll);
+
+        Self {
+            root,
+            banner,
+            banner_action,
+            sign_in_page,
+            sign_in_btn,
+            hero,
+            status_pill,
+            connect_btn,
+            btn_icon,
+            btn_label,
+            region_label,
+            detail_label,
+            ks_chip,
+            reconnect_btn,
+            stats,
+            dl_value,
+            ul_value,
+        }
     }
 
-    hero.append(&connect_btn);
+    fn update(&self, snap: &AppState) {
+        let Some(status) = &snap.status else {
+            self.sign_in_page.set_visible(false);
+            self.hero.set_visible(true);
+            self.stats.set_visible(false);
+            match &snap.poll_error {
+                Some(err) => self.show_banner(
+                    &format!("Couldn't read the VPN status: {}", err),
+                    BannerAction::None,
+                ),
+                None => self.banner.set_revealed(false),
+            }
+            self.status_pill.set_label("● LOADING");
+            set_state_class(&self.status_pill, "state-disconnected");
+            self.connect_btn.set_sensitive(false);
+            self.region_label.set_label("");
+            self.detail_label.set_label("");
+            self.ks_chip.set_visible(false);
+            self.reconnect_btn.set_visible(false);
+            return;
+        };
+        self.connect_btn.set_sensitive(true);
 
-    let profile_label = gtk4::Label::new(Some("No profile selected"));
-    profile_label.set_css_classes(&["hero-profile"]);
-    profile_label.set_halign(gtk4::Align::Center);
+        // ── Banner ───────────────────────────────────────────────────────
+        if status.state == VpnState::Error && !status.last_error.is_empty() {
+            let action = if status.needs_sign_in() && status.credentials_editable {
+                BannerAction::SignIn
+            } else {
+                BannerAction::Retry
+            };
+            self.show_banner(&status.last_error, action);
+        } else if let Some(err) = &snap.poll_error {
+            self.show_banner(
+                &format!("Couldn't read the VPN status: {}", err),
+                BannerAction::None,
+            );
+        } else {
+            self.banner.set_revealed(false);
+        }
 
-    let ip_label = gtk4::Label::new(Some("—"));
-    ip_label.set_css_classes(&["hero-ip"]);
-    ip_label.set_halign(gtk4::Align::Center);
+        // ── Sign-in call to action ───────────────────────────────────────
+        let signed_out = !status.logged_in;
+        self.sign_in_page.set_visible(signed_out);
+        self.hero.set_visible(!signed_out);
+        self.stats.set_visible(!signed_out);
+        if signed_out {
+            if status.credentials_editable {
+                self.sign_in_page.set_description(Some(
+                    "Enter your Private Internet Access username and password to use the VPN.",
+                ));
+                self.sign_in_btn.set_visible(true);
+            } else {
+                self.sign_in_page.set_description(Some(
+                    "Your PIA credentials are managed by your vexos NixOS config (sops), \
+                     and the configured credentials file is missing.",
+                ));
+                self.sign_in_btn.set_visible(false);
+            }
+            return;
+        }
 
-    hero.append(&profile_label);
-    hero.append(&ip_label);
-    page.append(&hero);
+        // ── Connect toggle + state ───────────────────────────────────────
+        let (pill, class, label, icon) = match (snap.unit_active, status.state) {
+            (true, VpnState::Connected) => (
+                "● CONNECTED",
+                "state-connected",
+                "DISCONNECT",
+                "network-vpn-symbolic",
+            ),
+            (true, VpnState::Error) => (
+                "● ERROR — RETRYING",
+                "state-error",
+                "STOP",
+                "network-vpn-no-route-symbolic",
+            ),
+            (true, _) => (
+                "● CONNECTING\u{2026}",
+                "state-connecting",
+                "CANCEL",
+                "network-vpn-acquiring-symbolic",
+            ),
+            (false, VpnState::Error) => (
+                "● ERROR",
+                "state-error",
+                "CONNECT",
+                "network-vpn-disabled-symbolic",
+            ),
+            (false, _) => (
+                "● DISCONNECTED",
+                "state-disconnected",
+                "CONNECT",
+                "network-vpn-disabled-symbolic",
+            ),
+        };
+        self.status_pill.set_label(pill);
+        set_state_class(&self.status_pill, class);
+        set_state_class(&self.connect_btn, class);
+        self.btn_label.set_label(label);
+        self.btn_icon.set_icon_name(Some(icon));
 
-    // ── Stat cards ────────────────────────────────────────────────────────
+        // ── Region / protocol / since ────────────────────────────────────
+        let connected = status.state == VpnState::Connected;
+        if status.state.is_active() && !status.region_name.is_empty() {
+            let proto = if status.protocol.is_empty() {
+                &status.protocol_setting
+            } else {
+                &status.protocol
+            };
+            self.region_label.set_label(&format!(
+                "{} \u{00b7} {}",
+                status.region_name,
+                protocol_label(proto)
+            ));
+        } else {
+            self.region_label.set_label(&format!(
+                "{} \u{00b7} {}",
+                region_display(snap, &status.region_setting),
+                protocol_label(&status.protocol_setting)
+            ));
+        }
+        let detail = if connected {
+            let mut parts = Vec::new();
+            if let Some(since) = connected_since(&status.since) {
+                parts.push(since);
+            }
+            if !status.server_cn.is_empty() {
+                parts.push(status.server_cn.clone());
+            }
+            parts.join(" \u{00b7} ")
+        } else if status.region_setting == vex_vpn::vexos::AUTO_REGION {
+            "Region: automatic (fastest at connect time)".to_string()
+        } else {
+            String::new()
+        };
+        self.detail_label.set_label(&detail);
 
-    let stats_grid = gtk4::Grid::new();
-    stats_grid.set_column_spacing(8);
-    stats_grid.set_row_spacing(8);
-    stats_grid.set_column_homogeneous(true);
-    stats_grid.set_margin_bottom(22);
+        // ── Kill switch chip ─────────────────────────────────────────────
+        if status.killswitch_mode == KillSwitchMode::Off {
+            self.ks_chip.set_visible(false);
+        } else {
+            self.ks_chip.set_visible(true);
+            if status.killswitch {
+                self.ks_chip.set_label("KILL SWITCH ON");
+                set_state_class(&self.ks_chip, "state-connected");
+            } else {
+                self.ks_chip.set_label("KILL SWITCH OFF");
+                set_state_class(&self.ks_chip, "state-disconnected");
+            }
+        }
+        self.reconnect_btn.set_visible(snap.unit_active && connected);
 
-    let (dl_card, dl_value) = make_stat_card("DOWNLOAD", "0 B");
-    let (ul_card, ul_value) = make_stat_card("UPLOAD", "0 B");
+        // ── Rates ────────────────────────────────────────────────────────
+        let (rx, tx) = if connected {
+            (snap.rates.rx_per_s, snap.rates.tx_per_s)
+        } else {
+            (0.0, 0.0)
+        };
+        self.dl_value
+            .set_label(&format!("{}/s", format_bytes(rx.round() as u64)));
+        self.ul_value
+            .set_label(&format!("{}/s", format_bytes(tx.round() as u64)));
+    }
 
-    stats_grid.attach(&dl_card, 0, 0, 1, 1);
-    stats_grid.attach(&ul_card, 1, 0, 1, 1);
-    page.append(&stats_grid);
+    fn show_banner(&self, title: &str, action: BannerAction) {
+        self.banner.set_title(&glib::markup_escape_text(title));
+        self.banner.set_button_label(match action {
+            BannerAction::SignIn => Some("Sign in"),
+            BannerAction::Retry => Some("Retry"),
+            BannerAction::None => None,
+        });
+        self.banner_action.set(action);
+        self.banner.set_revealed(true);
+    }
+}
 
-    let live = LiveWidgets {
-        status_pill,
-        connect_btn,
-        btn_icon,
-        btn_label,
-        profile_label,
-        ip_label,
-        dl_value,
-        ul_value,
-    };
-
-    (page, live)
+/// "Connected since 14:05 · 1h 5m" from an ISO 8601 timestamp.
+fn connected_since(since: &str) -> Option<String> {
+    let start = glib::DateTime::from_iso8601(since, None).ok()?;
+    let local = start.to_local().ok()?;
+    let clock = local.format("%H:%M").ok()?;
+    let now = glib::DateTime::now_local().ok()?;
+    let elapsed = (now.to_unix() - start.to_unix()).max(0) as u64;
+    Some(format!(
+        "Connected since {} \u{00b7} {}",
+        clock,
+        format_duration(elapsed)
+    ))
 }
 
 fn make_stat_card(label: &str, init_val: &str) -> (gtk4::Box, gtk4::Label) {
@@ -614,84 +851,6 @@ fn make_stat_card(label: &str, init_val: &str) -> (gtk4::Box, gtk4::Label) {
     card.append(&lbl);
     card.append(&val);
     (card, val)
-}
-
-// ---------------------------------------------------------------------------
-// Widget refresh
-// ---------------------------------------------------------------------------
-
-fn refresh_widgets(live: &LiveWidgets, s: &AppState) {
-    match &s.status {
-        ConnectionStatus::Connected => {
-            live.status_pill.set_label("● CONNECTED");
-            set_state_class(&live.status_pill, "state-connected");
-            set_state_class(&live.connect_btn, "state-connected");
-            live.btn_label.set_label("DISCONNECT");
-            live.btn_icon.set_icon_name(Some("network-vpn-symbolic"));
-        }
-        ConnectionStatus::KillSwitchActive => {
-            live.status_pill.set_label("● KILL SWITCH");
-            set_state_class(&live.status_pill, "state-connected");
-            set_state_class(&live.connect_btn, "state-connected");
-            live.btn_label.set_label("DISCONNECT");
-            live.btn_icon
-                .set_icon_name(Some("network-vpn-no-route-symbolic"));
-        }
-        ConnectionStatus::Connecting => {
-            live.status_pill.set_label("● CONNECTING...");
-            set_state_class(&live.status_pill, "state-connecting");
-            set_state_class(&live.connect_btn, "state-connecting");
-            live.btn_label.set_label("CANCEL");
-            live.btn_icon
-                .set_icon_name(Some("network-vpn-acquiring-symbolic"));
-        }
-        ConnectionStatus::Stale(_) => {
-            live.status_pill.set_label("● RECONNECTING...");
-            set_state_class(&live.status_pill, "state-connecting");
-            set_state_class(&live.connect_btn, "state-connecting");
-            live.btn_label.set_label("CANCEL");
-            live.btn_icon
-                .set_icon_name(Some("network-vpn-acquiring-symbolic"));
-        }
-        ConnectionStatus::Error(msg) => {
-            live.status_pill.set_label(&format!("● ERROR: {}", msg));
-            set_state_class(&live.status_pill, "state-error");
-            set_state_class(&live.connect_btn, "state-disconnected");
-            live.btn_label.set_label("CONNECT");
-            live.btn_icon
-                .set_icon_name(Some("network-vpn-disabled-symbolic"));
-        }
-        ConnectionStatus::Disconnected => {
-            live.status_pill.set_label("● DISCONNECTED");
-            set_state_class(&live.status_pill, "state-disconnected");
-            set_state_class(&live.connect_btn, "state-disconnected");
-            live.btn_label.set_label("CONNECT");
-            live.btn_icon
-                .set_icon_name(Some("network-vpn-disabled-symbolic"));
-        }
-    }
-
-    // Profile name.
-    if let Some(profile) = s.active_profile() {
-        live.profile_label.set_label(&profile.name);
-    } else {
-        live.profile_label.set_label("No profile selected");
-    }
-
-    // IP / stats.
-    if let Some(conn) = &s.connection {
-        if !conn.local_ip.is_empty() {
-            live.ip_label.set_label(&conn.local_ip);
-        } else {
-            live.ip_label.set_label("—");
-        }
-        live.dl_value.set_label(&format_bytes(conn.rx_bytes));
-        live.ul_value.set_label(&format_bytes(conn.tx_bytes));
-    } else {
-        live.ip_label.set_label("—");
-        live.dl_value.set_label("0 B");
-        live.ul_value.set_label("0 B");
-    }
 }
 
 fn set_state_class(widget: &impl gtk4::prelude::WidgetExt, new_class: &str) {

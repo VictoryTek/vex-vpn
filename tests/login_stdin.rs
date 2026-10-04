@@ -105,6 +105,22 @@ async fn missing_polkit_agent_is_reported() {
 }
 
 #[tokio::test]
+async fn missing_backend_is_a_failure_not_a_cancel() {
+    let _lock = SPAWN_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let p = fake_pkexec(
+        dir.path(),
+        127,
+        "",
+        "Error executing command as another user: No such file or directory",
+    );
+    assert!(matches!(
+        p.logout().await.unwrap(),
+        PrivOutcome::Failed { code: 127, .. }
+    ));
+}
+
+#[tokio::test]
 async fn failure_carries_stderr() {
     let _lock = SPAWN_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();

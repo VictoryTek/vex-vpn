@@ -239,6 +239,14 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
         });
     }
     window.add_action(&show_page);
+
+    // `win.enable-kill-switch` — the tray uses this to get a confirmation.
+    let enable_ks = gio::SimpleAction::new("enable-kill-switch", None);
+    {
+        let ui = ui.clone();
+        enable_ks.connect_activate(move |_, _| crate::ui_settings::enable_kill_switch(&ui, || {}));
+    }
+    window.add_action(&enable_ks);
     for (page, btn) in nav.iter() {
         btn.set_action_name(Some("win.show-page"));
         btn.set_action_target_value(Some(&page.to_variant()));

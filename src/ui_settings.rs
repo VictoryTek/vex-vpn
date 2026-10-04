@@ -9,7 +9,7 @@ use gtk4::prelude::*;
 use libadwaita as adw;
 use std::cell::Cell;
 use std::rc::Rc;
-use vex_vpn::vexos::KillSwitchMode;
+use vex_vpn::vexos::{KillSwitchMode, VpnState};
 
 const PROTOCOLS: [&str; 2] = ["wireguard", "openvpn"];
 
@@ -100,11 +100,7 @@ impl SettingsPage {
                     r.set_sensitive(true);
                 };
                 if row.is_active() {
-                    ui.run_unit(
-                        dbus::start_unit(dbus::KILLSWITCH_UNIT),
-                        Some("Kill switch on".to_string()),
-                        done,
-                    );
+                    enable_kill_switch(&ui, done);
                 } else {
                     ui.run_unit(
                         dbus::stop_unit(dbus::KILLSWITCH_UNIT),
@@ -255,6 +251,58 @@ impl SettingsPage {
             KillSwitchMode::Always => "Always \u{2014} on at boot, before any network",
         });
     }
+}
+
+/// Turn the kill switch on. When the VPN is not connected this cuts the
+/// network, so ask first. Calls `done` once the action finished or was
+/// declined.
+pub fn enable_kill_switch(ui: &Ui, done: impl FnOnce() + 'static) {
+    let ui = ui.clone();
+    gtk4::glib::spawn_future_local(async move {
+        let connected = ui
+            .ctx
+            .snapshot()
+            .await
+            .status
+            .is_some_and(|s| s.state == VpnState::Connected);
+        let start = |ui: &Ui, done: Box<dyn FnOnce()>| {
+            ui.run_unit(
+                dbus::start_unit(dbus::KILLSWITCH_UNIT),
+                Some("Kill switch on".to_string()),
+                done,
+            );
+        };
+        if connected {
+            start(&ui, Box::new(done));
+            return;
+        }
+        let dialog = adw::MessageDialog::builder()
+            .transient_for(&ui.window)
+            .modal(true)
+            .heading("Turn on the kill switch?")
+            .body(
+                "The VPN is not connected, so turning the kill switch on blocks \
+                 all internet access until you connect or turn it off again.",
+            )
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("enable", "Turn On");
+        dialog.set_response_appearance("enable", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let done: Cell<Option<Box<dyn FnOnce()>>> = Cell::new(Some(Box::new(done)));
+        dialog.connect_response(None, move |_, response| {
+            let Some(done) = done.take() else { return };
+            if response == "enable" {
+                start(&ui, done);
+            } else {
+                // Declined: re-sync the switch from the real status.
+                ui.ctx.poke();
+                done();
+            }
+        });
+        dialog.present();
+    });
 }
 
 fn row_button(label: &str, class: Option<&str>) -> gtk4::Button {

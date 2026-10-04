@@ -157,7 +157,8 @@ pub enum PrivOutcome {
         stdout: String,
     },
     /// pkexec exit 126 (dialog dismissed) or 127 (not authorized). `no_agent`
-    /// is set when no polkit authentication agent is running.
+    /// is set when no polkit authentication agent is running. (127 with
+    /// "No such file or directory" means the backend is missing: `Failed`.)
     Cancelled {
         no_agent: bool,
     },
@@ -242,7 +243,7 @@ impl Privileged {
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         Ok(match code {
             0 => PrivOutcome::Ok { stdout },
-            126 | 127 => PrivOutcome::Cancelled {
+            126 | 127 if !stderr.contains("No such file or directory") => PrivOutcome::Cancelled {
                 no_agent: stderr.contains("No authentication agent"),
             },
             _ => PrivOutcome::Failed {

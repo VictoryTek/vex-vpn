@@ -10,6 +10,8 @@ use vex_vpn::vexos::{is_valid_unit_arg, protocol_label, KillSwitchMode, VpnState
 pub enum TrayMessage {
     ShowWindow,
     ShowRegions,
+    /// Turn the kill switch on, after the window has asked for confirmation.
+    EnableKillSwitch,
     Quit,
 }
 
@@ -175,6 +177,9 @@ impl Tray for VexTray {
                                 "Kill switch off",
                                 dbus::stop_unit(dbus::KILLSWITCH_UNIT),
                             );
+                        } else if t.state() != VpnState::Connected {
+                            // Would cut the network: let the window confirm.
+                            let _ = t.tx.try_send(TrayMessage::EnableKillSwitch);
                         } else {
                             t.unit_action(
                                 "Kill switch on",

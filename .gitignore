@@ -1,7 +1,6 @@
 /target/
 /result
 /result-*
-flake.lock
 
 # Local UI screenshots used during development
 .github/screenshots/

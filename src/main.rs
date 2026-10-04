@@ -76,6 +76,14 @@ fn main() -> Result<()> {
                                 );
                             }
                         }
+                        TrayMessage::EnableKillSwitch => {
+                            app.activate();
+                            if let Some(win) =
+                                app.active_window().and_downcast::<adw::ApplicationWindow>()
+                            {
+                                ActionGroupExt::activate_action(&win, "enable-kill-switch", None);
+                            }
+                        }
                         TrayMessage::Quit => app.quit(),
                     }
                 }

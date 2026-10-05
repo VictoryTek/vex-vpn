@@ -12,97 +12,32 @@ use vex_vpn::vexos::{format_bytes, format_duration, protocol_label, KillSwitchMo
 // CSS
 // ---------------------------------------------------------------------------
 
+/// Only libadwaita colour variables, so the app follows the system light/dark
+/// style and accent colour.
 const APP_CSS: &str = r#"
-window.vex-window { background-color: #0d1117; }
-
-.vex-sidebar {
-    background-color: #0a0f16;
-    border-right: 1px solid rgba(255,255,255,0.10);
-}
-
-.section-title {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: .10em;
-    color: #a0a0a0;
-    margin-bottom: 6px;
-}
-.stat-label {
-    font-size: 10px;
-    color: #a0a0a0;
-    letter-spacing: .09em;
-}
-.stat-value {
-    font-size: 14px;
-    font-weight: 500;
-    color: #fafafa;
-    font-family: monospace;
-}
-
-.hero-profile { font-size: 17px; font-weight: 600; color: #fafafa; }
-.hero-ip      { font-size: 12px; color: #a0a0a0; font-family: monospace; }
-
-.nav-btn {
-    border-radius: 8px;
-    min-height: 42px;
-    color: #c8c8c8;
-    font-size: 13px;
-}
-.nav-btn:hover  { background: rgba(255,255,255,.08); color: #ffffff; }
-.nav-btn.active { background: rgba(0,195,137,.15);  color: #00c389; }
-
-.stat-card {
-    background: #111c2a;
-    border: 1px solid rgba(255,255,255,.10);
-    border-radius: 9px;
-    padding: 11px 13px;
-}
-
 .connect-btn {
-    border-radius: 9999px;
-    min-width: 152px;
-    min-height: 152px;
+    min-width: 120px;
+    min-height: 120px;
     padding: 0;
-    transition: all 200ms ease;
-}
-.connect-btn.state-disconnected {
-    background: #0f1923;
-    border: 2px solid rgba(0,195,137,0.45);
-    color: #00c389;
-}
-.connect-btn.state-disconnected:hover {
-    border-color: rgba(0,195,137,0.85);
-    box-shadow: 0 0 32px rgba(0,195,137,0.20);
+    border-radius: 9999px;
 }
 .connect-btn.state-connected {
-    background: #00291b;
-    border: 2px solid #00c389;
-    color: #00c389;
-    box-shadow: 0 0 40px rgba(0,195,137,0.25);
+    background-color: var(--accent-bg-color);
+    color: var(--accent-fg-color);
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--accent-bg-color) 22%, transparent);
 }
 .connect-btn.state-connecting {
-    background: #1a1306;
-    border: 2px solid rgba(255,180,0,0.7);
-    color: #ffb400;
+    color: var(--warning-color);
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--warning-bg-color) 22%, transparent);
 }
 .connect-btn.state-error {
-    background: #1f0d0d;
-    border: 2px solid rgba(255,80,80,0.7);
-    color: #ff7878;
+    background-color: var(--error-bg-color);
+    color: var(--error-fg-color);
 }
-
-.status-pill {
-    border-radius: 9999px;
-    padding: 4px 14px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: .09em;
-}
-.status-pill.state-connected    { background: rgba(0,195,137,.18);  color: #00c389; }
-.status-pill.state-disconnected { background: rgba(255,255,255,.10); color: #d8d8d8; }
-.status-pill.state-connecting   { background: rgba(255,180,0,.18);  color: #ffb400; }
-.status-pill.state-error        { background: rgba(255,80,80,.18);  color: #ff7878; }
 "#;
+
+/// The app logo, bundled in the GResource.
+const LOGO_RESOURCE: &str = "/com/vex/vpn/branding/vex-vpn.png";
 
 // ---------------------------------------------------------------------------
 // Shared UI handle for the pages and dialogs
@@ -176,11 +111,10 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("vex-vpn")
-        .default_width(820)
-        .default_height(620)
+        .title("Vex VPN")
+        .default_width(900)
+        .default_height(640)
         .build();
-    window.add_css_class("vex-window");
 
     let toast_overlay = adw::ToastOverlay::new();
     let ui = Ui {
@@ -198,43 +132,66 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
         window.connect_unmap(move |_| c.set_window_visible(false));
     }
 
-    let root = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let (sidebar, nav) = build_sidebar();
-    root.append(&sidebar);
-
     let dashboard = Dashboard::new(&ui);
     let regions = crate::ui_regions::RegionsPage::new(&ui);
     let settings = crate::ui_settings::SettingsPage::new(&ui);
-    let missing = build_missing_page(&ctx);
+
+    // ── Status pane | Regions ────────────────────────────────────────────
+    let status_header = adw::HeaderBar::new();
+    status_header.set_title_widget(Some(&logo_title()));
+    status_header.pack_end(&menu_button());
+    let status_view = adw::ToolbarView::new();
+    status_view.add_top_bar(&status_header);
+    status_view.set_content(Some(&dashboard.root));
+
+    let regions_view = adw::ToolbarView::new();
+    regions_view.add_top_bar(&adw::HeaderBar::new());
+    regions_view.set_content(Some(&regions.root));
+
+    let split = adw::NavigationSplitView::new();
+    split.set_min_sidebar_width(320.0);
+    split.set_max_sidebar_width(360.0);
+    split.set_sidebar_width_fraction(0.4);
+    split.set_sidebar(Some(&adw::NavigationPage::new(&status_view, "Vex VPN")));
+    split.set_content(Some(&adw::NavigationPage::new(&regions_view, "Regions")));
+
+    // ── Backend missing ──────────────────────────────────────────────────
+    let missing_header = adw::HeaderBar::new();
+    missing_header.pack_end(&menu_button());
+    let missing_view = adw::ToolbarView::new();
+    missing_view.add_top_bar(&missing_header);
+    missing_view.set_content(Some(&build_missing_page(&ctx)));
 
     let stack = gtk4::Stack::new();
-    stack.set_hexpand(true);
     stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
-    stack.add_named(&dashboard.root, Some("dashboard"));
-    stack.add_named(&regions.root, Some("regions"));
-    stack.add_named(&settings.root, Some("settings"));
-    stack.add_named(&missing, Some("missing"));
-    root.append(&stack);
+    stack.add_named(&split, Some("main"));
+    stack.add_named(&missing_view, Some("missing"));
 
-    // `win.show-page('<name>')` — sidebar buttons and the tray use this.
+    // ── Preferences (built once, hidden on close) ────────────────────────
+    let prefs = adw::PreferencesWindow::builder()
+        .title("Preferences")
+        .transient_for(&window)
+        .modal(true)
+        .hide_on_close(true)
+        .search_enabled(false)
+        .build();
+    prefs.add(&settings.root);
+
+    let show_prefs = gio::SimpleAction::new("preferences", None);
+    {
+        let prefs = prefs.clone();
+        show_prefs.connect_activate(move |_, _| prefs.present());
+    }
+    window.add_action(&show_prefs);
+
+    // `win.show-page('<name>')` — the tray uses this. Regions are always on
+    // screen, so only "settings" needs to do anything.
     let show_page = gio::SimpleAction::new("show-page", Some(glib::VariantTy::STRING));
     {
-        let stack = stack.clone();
-        let nav = nav.clone();
+        let prefs = prefs.clone();
         show_page.connect_activate(move |_, param| {
-            let Some(name) = param.and_then(|p| p.str()) else {
-                return;
-            };
-            if stack.visible_child_name().as_deref() == Some("missing") {
-                return;
-            }
-            stack.set_visible_child_name(name);
-            for (page, btn) in nav.iter() {
-                if *page == name {
-                    btn.add_css_class("active");
-                } else {
-                    btn.remove_css_class("active");
-                }
+            if param.and_then(|p| p.str()) == Some("settings") {
+                prefs.present();
             }
         });
     }
@@ -247,25 +204,9 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
         enable_ks.connect_activate(move |_, _| crate::ui_settings::enable_kill_switch(&ui, || {}));
     }
     window.add_action(&enable_ks);
-    for (page, btn) in nav.iter() {
-        btn.set_action_name(Some("win.show-page"));
-        btn.set_action_target_value(Some(&page.to_variant()));
-    }
 
-    let header = adw::HeaderBar::new();
-    header.set_show_title(false);
-    let menu_button = gtk4::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .tooltip_text("Main menu")
-        .menu_model(&build_primary_menu())
-        .build();
-    header.pack_end(&menu_button);
-
-    let toolbar_view = adw::ToolbarView::new();
-    toolbar_view.add_top_bar(&header);
-    toast_overlay.set_child(Some(&root));
-    toolbar_view.set_content(Some(&toast_overlay));
-    window.set_content(Some(&toolbar_view));
+    toast_overlay.set_child(Some(&stack));
+    window.set_content(Some(&toast_overlay));
 
     // Re-render after every status poll until the window is closed.
     let closed = Rc::new(Cell::new(false));
@@ -286,12 +227,8 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
                 break;
             }
             let present = snap.backend.is_some();
-            sidebar_nav_sensitive(&nav, present);
-            if !present {
-                stack.set_visible_child_name("missing");
-            } else if stack.visible_child_name().as_deref() == Some("missing") {
-                stack.set_visible_child_name("dashboard");
-            }
+            stack.set_visible_child_name(if present { "main" } else { "missing" });
+            show_prefs.set_enabled(present);
             dashboard.update(&snap);
             regions.update(&snap);
             settings.update(&snap);
@@ -305,6 +242,27 @@ pub fn build_ui(app: &adw::Application, ctx: Ctx) -> adw::ApplicationWindow {
     window
 }
 
+/// Header title: the app logo next to the app name.
+fn logo_title() -> gtk4::Box {
+    let title = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    let logo = gtk4::Image::from_resource(LOGO_RESOURCE);
+    logo.set_pixel_size(22);
+    let name = gtk4::Label::new(Some("Vex VPN"));
+    name.add_css_class("heading");
+    title.append(&logo);
+    title.append(&name);
+    title
+}
+
+fn menu_button() -> gtk4::MenuButton {
+    gtk4::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main menu")
+        .primary(true)
+        .menu_model(&build_primary_menu())
+        .build()
+}
+
 // ---------------------------------------------------------------------------
 // Primary menu
 // ---------------------------------------------------------------------------
@@ -313,11 +271,12 @@ pub fn build_primary_menu() -> gio::Menu {
     let menu = gio::Menu::new();
 
     let view_section = gio::Menu::new();
+    view_section.append(Some("Preferences"), Some("win.preferences"));
     view_section.append(Some("Keyboard Shortcuts"), Some("app.show-shortcuts"));
     menu.append_section(None, &view_section);
 
     let app_section = gio::Menu::new();
-    app_section.append(Some("About vex-vpn"), Some("app.about"));
+    app_section.append(Some("About Vex VPN"), Some("app.about"));
     app_section.append(Some("Quit"), Some("app.quit"));
     menu.append_section(None, &app_section);
 
@@ -341,7 +300,7 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
     let about = adw::AboutWindow::builder()
         .transient_for(parent)
         .modal(true)
-        .application_name("vex-vpn")
+        .application_name("Vex VPN")
         .application_icon("vex-vpn")
         .developer_name("vex-vpn contributors")
         .version(env!("CARGO_PKG_VERSION"))
@@ -350,81 +309,6 @@ pub fn show_about_window(parent: &adw::ApplicationWindow) {
         .license_type(gtk4::License::MitX11)
         .build();
     about.present();
-}
-
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
-
-type Nav = Vec<(&'static str, gtk4::Button)>;
-
-fn build_sidebar() -> (gtk4::Box, Rc<Nav>) {
-    let sidebar = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    sidebar.add_css_class("vex-sidebar");
-    sidebar.set_size_request(192, -1);
-
-    let logo_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    logo_row.set_margin_top(22);
-    logo_row.set_margin_start(18);
-    logo_row.set_margin_bottom(20);
-
-    let logo_img = gtk4::Image::from_resource("/com/vex/vpn/branding/vpn2.png");
-    logo_img.set_pixel_size(28);
-
-    logo_row.append(&logo_img);
-    sidebar.append(&logo_row);
-
-    let nav = vec![
-        (
-            "dashboard",
-            nav_button("go-home-symbolic", "Dashboard", true),
-        ),
-        (
-            "regions",
-            nav_button("network-server-symbolic", "Regions", false),
-        ),
-        (
-            "settings",
-            nav_button("emblem-system-symbolic", "Settings", false),
-        ),
-    ];
-    for (_, btn) in &nav {
-        sidebar.append(btn);
-    }
-
-    (sidebar, Rc::new(nav))
-}
-
-fn sidebar_nav_sensitive(nav: &Nav, sensitive: bool) {
-    for (_, btn) in nav {
-        btn.set_sensitive(sensitive);
-    }
-}
-
-fn nav_button(icon: &str, label: &str, active: bool) -> gtk4::Button {
-    let btn = gtk4::Button::new();
-    btn.add_css_class("nav-btn");
-    if active {
-        btn.add_css_class("active");
-    }
-    btn.set_margin_start(8);
-    btn.set_margin_end(8);
-    btn.set_margin_bottom(2);
-
-    let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
-    row.set_margin_start(8);
-
-    let img = gtk4::Image::from_icon_name(icon);
-    img.set_pixel_size(16);
-
-    let lbl = gtk4::Label::new(Some(label));
-    lbl.set_halign(gtk4::Align::Start);
-    lbl.set_hexpand(true);
-
-    row.append(&img);
-    row.append(&lbl);
-    btn.set_child(Some(&row));
-    btn
 }
 
 // ---------------------------------------------------------------------------
@@ -440,10 +324,10 @@ fn build_missing_page(ctx: &Ctx) -> adw::StatusPage {
     check.connect_clicked(move |_| c.poke());
 
     adw::StatusPage::builder()
-        .icon_name("network-vpn-disabled-symbolic")
+        .paintable(&gtk4::gdk::Texture::from_resource(LOGO_RESOURCE))
         .title("vexos-vpn backend not installed")
         .description(
-            "vex-vpn is the desktop app for vexos-vpn, the VPN service that ships \
+            "Vex VPN is the desktop app for vexos-vpn, the VPN service that ships \
              with vexos. Enable it in your vexos NixOS config (modules/vpn.nix) \
              and rebuild.",
         )
@@ -452,7 +336,7 @@ fn build_missing_page(ctx: &Ctx) -> adw::StatusPage {
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard
+// Dashboard (status pane)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq)]
@@ -469,23 +353,27 @@ struct Dashboard {
     sign_in_page: adw::StatusPage,
     sign_in_btn: gtk4::Button,
     hero: gtk4::Box,
-    status_pill: gtk4::Label,
     connect_btn: gtk4::Button,
-    btn_icon: gtk4::Image,
-    btn_label: gtk4::Label,
+    state_label: gtk4::Label,
     region_label: gtk4::Label,
     detail_label: gtk4::Label,
-    ks_chip: gtk4::Label,
     reconnect_btn: gtk4::Button,
-    stats: gtk4::Grid,
+    details: gtk4::ListBox,
+    ks_row: adw::SwitchRow,
+    ks_off_row: adw::ActionRow,
     dl_value: gtk4::Label,
     ul_value: gtk4::Label,
+    /// Set while the kill switch row is updated from status, so its change
+    /// handler does not fire an action.
+    syncing: Rc<Cell<bool>>,
+    /// A kill switch change is in flight; don't overwrite the user's choice
+    /// with the not-yet-updated status.
+    ks_busy: Rc<Cell<bool>>,
 }
 
 impl Dashboard {
     fn new(ui: &Ui) -> Self {
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        root.set_hexpand(true);
 
         // ── Error banner ─────────────────────────────────────────────────
         let banner = adw::Banner::new("");
@@ -506,11 +394,11 @@ impl Dashboard {
         root.append(&banner);
 
         let page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        page.set_margin_top(28);
-        page.set_margin_bottom(28);
-        page.set_margin_start(28);
-        page.set_margin_end(28);
-        page.set_vexpand(true);
+        page.set_margin_top(24);
+        page.set_margin_bottom(24);
+        page.set_margin_start(20);
+        page.set_margin_end(20);
+        page.set_valign(gtk4::Align::Center);
 
         // ── Sign-in call to action ───────────────────────────────────────
         let sign_in_btn = gtk4::Button::with_label("Sign in to PIA");
@@ -522,40 +410,30 @@ impl Dashboard {
             sign_in_btn.connect_clicked(move |_| crate::ui_login::sign_in(&ui, false));
         }
         let sign_in_page = adw::StatusPage::builder()
-            .icon_name("dialog-password-symbolic")
+            .paintable(&gtk4::gdk::Texture::from_resource(LOGO_RESOURCE))
             .title("Sign in to PIA")
             .description("Enter your Private Internet Access username and password to use the VPN.")
             .child(&sign_in_btn)
-            .vexpand(true)
             .visible(false)
             .build();
+        sign_in_page.add_css_class("compact");
         page.append(&sign_in_page);
 
         // ── Hero ─────────────────────────────────────────────────────────
-        let hero = gtk4::Box::new(gtk4::Orientation::Vertical, 14);
+        let hero = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
         hero.set_halign(gtk4::Align::Center);
-        hero.set_margin_bottom(28);
+        hero.set_margin_bottom(24);
 
-        let status_pill = gtk4::Label::new(Some("● DISCONNECTED"));
-        status_pill.set_css_classes(&["status-pill", "state-disconnected"]);
-        status_pill.set_halign(gtk4::Align::Center);
-        hero.append(&status_pill);
-
-        let connect_btn = gtk4::Button::new();
+        let connect_btn = gtk4::Button::from_icon_name("system-shutdown-symbolic");
         connect_btn.set_css_classes(&["connect-btn", "state-disconnected"]);
         connect_btn.set_halign(gtk4::Align::Center);
-
-        let btn_inner = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-        btn_inner.set_halign(gtk4::Align::Center);
-        btn_inner.set_valign(gtk4::Align::Center);
-        let btn_icon = gtk4::Image::from_icon_name("network-vpn-disabled-symbolic");
-        btn_icon.set_pixel_size(28);
-        let btn_label = gtk4::Label::new(Some("CONNECT"));
-        btn_label.set_css_classes(&["section-title"]);
-        btn_inner.append(&btn_icon);
-        btn_inner.append(&btn_label);
-        connect_btn.set_child(Some(&btn_inner));
-
+        connect_btn.set_margin_top(12);
+        connect_btn.set_margin_bottom(18);
+        if let Some(icon) = connect_btn.child() {
+            if let Ok(img) = icon.downcast::<gtk4::Image>() {
+                img.set_pixel_size(44);
+            }
+        }
         {
             let ui = ui.clone();
             connect_btn.connect_clicked(move |btn| {
@@ -580,24 +458,23 @@ impl Dashboard {
         }
         hero.append(&connect_btn);
 
+        let state_label = gtk4::Label::new(None);
+        state_label.add_css_class("title-1");
         let region_label = gtk4::Label::new(None);
-        region_label.set_css_classes(&["hero-profile"]);
-        region_label.set_halign(gtk4::Align::Center);
+        region_label.set_wrap(true);
+        region_label.set_justify(gtk4::Justification::Center);
         let detail_label = gtk4::Label::new(None);
-        detail_label.set_css_classes(&["hero-ip"]);
-        detail_label.set_halign(gtk4::Align::Center);
+        detail_label.add_css_class("dim-label");
         detail_label.set_wrap(true);
         detail_label.set_justify(gtk4::Justification::Center);
+        hero.append(&state_label);
         hero.append(&region_label);
         hero.append(&detail_label);
 
-        let chips = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-        chips.set_halign(gtk4::Align::Center);
-        let ks_chip = gtk4::Label::new(None);
-        ks_chip.add_css_class("status-pill");
-        chips.append(&ks_chip);
         let reconnect_btn = gtk4::Button::with_label("Reconnect");
         reconnect_btn.add_css_class("pill");
+        reconnect_btn.set_halign(gtk4::Align::Center);
+        reconnect_btn.set_margin_top(10);
         {
             let ui = ui.clone();
             reconnect_btn.connect_clicked(move |btn| {
@@ -610,20 +487,57 @@ impl Dashboard {
                 );
             });
         }
-        chips.append(&reconnect_btn);
-        hero.append(&chips);
+        hero.append(&reconnect_btn);
         page.append(&hero);
 
-        // ── Live rates ───────────────────────────────────────────────────
-        let stats = gtk4::Grid::new();
-        stats.set_column_spacing(8);
-        stats.set_row_spacing(8);
-        stats.set_column_homogeneous(true);
-        let (dl_card, dl_value) = make_stat_card("DOWNLOAD", "0 B/s");
-        let (ul_card, ul_value) = make_stat_card("UPLOAD", "0 B/s");
-        stats.attach(&dl_card, 0, 0, 1, 1);
-        stats.attach(&ul_card, 1, 0, 1, 1);
-        page.append(&stats);
+        // ── Kill switch + live rates ─────────────────────────────────────
+        let details = gtk4::ListBox::new();
+        details.set_selection_mode(gtk4::SelectionMode::None);
+        details.add_css_class("boxed-list");
+
+        let syncing = Rc::new(Cell::new(false));
+        let ks_busy = Rc::new(Cell::new(false));
+        let ks_row = adw::SwitchRow::builder().title("Kill switch").build();
+        {
+            let ui = ui.clone();
+            let syncing = syncing.clone();
+            let busy = ks_busy.clone();
+            ks_row.connect_active_notify(move |row| {
+                if syncing.get() {
+                    return;
+                }
+                busy.set(true);
+                row.set_sensitive(false);
+                let r = row.clone();
+                let b = busy.clone();
+                let done = move || {
+                    b.set(false);
+                    r.set_sensitive(true);
+                };
+                if row.is_active() {
+                    crate::ui_settings::enable_kill_switch(&ui, done);
+                } else {
+                    ui.run_unit(
+                        dbus::stop_unit(dbus::KILLSWITCH_UNIT),
+                        Some("Kill switch off".to_string()),
+                        done,
+                    );
+                }
+            });
+        }
+        details.append(&ks_row);
+        let ks_off_row = adw::ActionRow::builder()
+            .title("Kill switch not available")
+            .subtitle("Kill switch mode is \u{201c}off\u{201d} in your vexos NixOS config")
+            .visible(false)
+            .build();
+        details.append(&ks_off_row);
+
+        let (dl_row, dl_value) = rate_row("Download");
+        let (ul_row, ul_value) = rate_row("Upload");
+        details.append(&dl_row);
+        details.append(&ul_row);
+        page.append(&details);
 
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -639,17 +553,18 @@ impl Dashboard {
             sign_in_page,
             sign_in_btn,
             hero,
-            status_pill,
             connect_btn,
-            btn_icon,
-            btn_label,
+            state_label,
             region_label,
             detail_label,
-            ks_chip,
             reconnect_btn,
-            stats,
+            details,
+            ks_row,
+            ks_off_row,
             dl_value,
             ul_value,
+            syncing,
+            ks_busy,
         }
     }
 
@@ -657,7 +572,7 @@ impl Dashboard {
         let Some(status) = &snap.status else {
             self.sign_in_page.set_visible(false);
             self.hero.set_visible(true);
-            self.stats.set_visible(false);
+            self.details.set_visible(false);
             match &snap.poll_error {
                 Some(err) => self.show_banner(
                     &format!("Couldn't read the VPN status: {}", err),
@@ -665,12 +580,11 @@ impl Dashboard {
                 ),
                 None => self.banner.set_revealed(false),
             }
-            self.status_pill.set_label("● LOADING");
-            set_state_class(&self.status_pill, "state-disconnected");
+            self.state_label.set_label("Loading\u{2026}");
+            set_state_class(&self.connect_btn, "state-disconnected");
             self.connect_btn.set_sensitive(false);
             self.region_label.set_label("");
             self.detail_label.set_label("");
-            self.ks_chip.set_visible(false);
             self.reconnect_btn.set_visible(false);
             return;
         };
@@ -697,7 +611,7 @@ impl Dashboard {
         let signed_out = !status.logged_in;
         self.sign_in_page.set_visible(signed_out);
         self.hero.set_visible(!signed_out);
-        self.stats.set_visible(!signed_out);
+        self.details.set_visible(!signed_out);
         if signed_out {
             if status.credentials_editable {
                 self.sign_in_page.set_description(Some(
@@ -715,43 +629,16 @@ impl Dashboard {
         }
 
         // ── Connect toggle + state ───────────────────────────────────────
-        let (pill, class, label, icon) = match (snap.unit_active, status.state) {
-            (true, VpnState::Connected) => (
-                "● CONNECTED",
-                "state-connected",
-                "DISCONNECT",
-                "network-vpn-symbolic",
-            ),
-            (true, VpnState::Error) => (
-                "● ERROR — RETRYING",
-                "state-error",
-                "STOP",
-                "network-vpn-no-route-symbolic",
-            ),
-            (true, _) => (
-                "● CONNECTING\u{2026}",
-                "state-connecting",
-                "CANCEL",
-                "network-vpn-acquiring-symbolic",
-            ),
-            (false, VpnState::Error) => (
-                "● ERROR",
-                "state-error",
-                "CONNECT",
-                "network-vpn-disabled-symbolic",
-            ),
-            (false, _) => (
-                "● DISCONNECTED",
-                "state-disconnected",
-                "CONNECT",
-                "network-vpn-disabled-symbolic",
-            ),
+        let (title, class, action) = match (snap.unit_active, status.state) {
+            (true, VpnState::Connected) => ("Connected", "state-connected", "Disconnect"),
+            (true, VpnState::Error) => ("Error \u{2014} retrying", "state-error", "Stop"),
+            (true, _) => ("Connecting\u{2026}", "state-connecting", "Cancel"),
+            (false, VpnState::Error) => ("Error", "state-error", "Connect"),
+            (false, _) => ("Disconnected", "state-disconnected", "Connect"),
         };
-        self.status_pill.set_label(pill);
-        set_state_class(&self.status_pill, class);
+        self.state_label.set_label(title);
         set_state_class(&self.connect_btn, class);
-        self.btn_label.set_label(label);
-        self.btn_icon.set_icon_name(Some(icon));
+        self.connect_btn.set_tooltip_text(Some(action));
 
         // ── Region / protocol / since ────────────────────────────────────
         let connected = status.state == VpnState::Connected;
@@ -782,28 +669,29 @@ impl Dashboard {
                 parts.push(status.server_cn.clone());
             }
             parts.join(" \u{00b7} ")
-        } else if status.region_setting == vex_vpn::vexos::AUTO_REGION {
-            "Region: automatic (fastest at connect time)".to_string()
         } else {
-            String::new()
+            "Your traffic is not protected".to_string()
         };
         self.detail_label.set_label(&detail);
-
-        // ── Kill switch chip ─────────────────────────────────────────────
-        if status.killswitch_mode == KillSwitchMode::Off {
-            self.ks_chip.set_visible(false);
-        } else {
-            self.ks_chip.set_visible(true);
-            if status.killswitch {
-                self.ks_chip.set_label("KILL SWITCH ON");
-                set_state_class(&self.ks_chip, "state-connected");
-            } else {
-                self.ks_chip.set_label("KILL SWITCH OFF");
-                set_state_class(&self.ks_chip, "state-disconnected");
-            }
-        }
         self.reconnect_btn
             .set_visible(snap.unit_active && connected);
+
+        // ── Kill switch ──────────────────────────────────────────────────
+        if !self.ks_busy.get() {
+            self.syncing.set(true);
+            self.ks_row.set_active(status.killswitch);
+            self.syncing.set(false);
+        }
+        let ks_available = status.killswitch_mode != KillSwitchMode::Off;
+        self.ks_row.set_visible(ks_available);
+        self.ks_off_row.set_visible(!ks_available);
+        self.ks_row.set_subtitle(match status.killswitch_mode {
+            KillSwitchMode::Always => {
+                "Blocks all traffic outside the VPN tunnel. Always on at boot; \
+                 turning it off asks for your password and lasts until reboot."
+            }
+            _ => "Blocks all traffic outside the VPN tunnel",
+        });
 
         // ── Rates ────────────────────────────────────────────────────────
         let (rx, tx) = if connected {
@@ -843,21 +731,12 @@ fn connected_since(since: &str) -> Option<String> {
     ))
 }
 
-fn make_stat_card(label: &str, init_val: &str) -> (gtk4::Box, gtk4::Label) {
-    let card = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-    card.add_css_class("stat-card");
-
-    let lbl = gtk4::Label::new(Some(label));
-    lbl.set_css_classes(&["stat-label"]);
-    lbl.set_halign(gtk4::Align::Start);
-
-    let val = gtk4::Label::new(Some(init_val));
-    val.set_css_classes(&["stat-value"]);
-    val.set_halign(gtk4::Align::Start);
-
-    card.append(&lbl);
-    card.append(&val);
-    (card, val)
+fn rate_row(title: &str) -> (adw::ActionRow, gtk4::Label) {
+    let row = adw::ActionRow::builder().title(title).build();
+    let value = gtk4::Label::new(Some("0 B/s"));
+    value.add_css_class("numeric");
+    row.add_suffix(&value);
+    (row, value)
 }
 
 fn set_state_class(widget: &impl gtk4::prelude::WidgetExt, new_class: &str) {

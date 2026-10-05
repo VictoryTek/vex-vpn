@@ -24,7 +24,7 @@ pub struct RegionsPage {
 impl RegionsPage {
     pub fn new(ui: &Ui) -> Self {
         let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-        root.set_margin_top(18);
+        root.set_margin_top(6);
         root.set_margin_bottom(18);
         root.set_margin_start(18);
         root.set_margin_end(18);
@@ -32,7 +32,12 @@ impl RegionsPage {
         let search = gtk4::SearchEntry::builder()
             .placeholder_text("Search regions")
             .build();
-        root.append(&search);
+        root.append(
+            &adw::Clamp::builder()
+                .maximum_size(560)
+                .child(&search)
+                .build(),
+        );
 
         let list = gtk4::ListBox::new();
         list.set_selection_mode(gtk4::SelectionMode::None);
@@ -57,7 +62,7 @@ impl RegionsPage {
             search.connect_search_changed(move |_| list.invalidate_filter());
         }
 
-        let clamp = adw::Clamp::builder().maximum_size(640).child(&list).build();
+        let clamp = adw::Clamp::builder().maximum_size(560).child(&list).build();
         let scroll = gtk4::ScrolledWindow::builder()
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vexpand(true)
@@ -206,6 +211,7 @@ fn region_row(
         row.add_suffix(&lbl);
     }
     let check = gtk4::Image::from_icon_name("object-select-symbolic");
+    check.add_css_class("accent");
     check.set_visible(selected);
     row.add_suffix(&check);
     row

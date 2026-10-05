@@ -149,4 +149,5 @@ fn register_app_actions(app: &adw::Application) {
     }
     app.add_action(&quit_action);
     app.set_accels_for_action("app.quit", &["<Primary>Q"]);
+    app.set_accels_for_action("win.preferences", &["<Primary>comma"]);
 }

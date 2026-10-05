@@ -1,4 +1,4 @@
-//! Settings / Account page: protocol, kill switch, PIA account, server list,
+//! Preferences: protocol, PIA account, server list,
 //! and the read-only options that live in the vexos NixOS config.
 
 use crate::dbus;
@@ -16,8 +16,6 @@ const PROTOCOLS: [&str; 2] = ["wireguard", "openvpn"];
 pub struct SettingsPage {
     pub root: adw::PreferencesPage,
     protocol_row: adw::ComboRow,
-    ks_row: adw::SwitchRow,
-    ks_off_row: adw::ActionRow,
     account_row: adw::ActionRow,
     sign_in_btn: gtk4::Button,
     change_btn: gtk4::Button,
@@ -28,7 +26,7 @@ pub struct SettingsPage {
     /// Set while widgets are updated from status, so their change handlers
     /// do not fire actions.
     syncing: Rc<Cell<bool>>,
-    /// A protocol / kill-switch change is in flight; don't overwrite the
+    /// A protocol change is in flight; don't overwrite the
     /// user's choice with the not-yet-updated status.
     busy: Rc<Cell<bool>>,
 }
@@ -77,47 +75,6 @@ impl SettingsPage {
         }
         conn_group.add(&protocol_row);
         root.add(&conn_group);
-
-        // ── Kill switch ──────────────────────────────────────────────────
-        let ks_group = adw::PreferencesGroup::builder()
-            .title("Kill switch")
-            .build();
-        let ks_row = adw::SwitchRow::builder().title("Kill switch").build();
-        {
-            let ui = ui.clone();
-            let syncing = syncing.clone();
-            let busy = busy.clone();
-            ks_row.connect_active_notify(move |row| {
-                if syncing.get() {
-                    return;
-                }
-                busy.set(true);
-                row.set_sensitive(false);
-                let r = row.clone();
-                let b = busy.clone();
-                let done = move || {
-                    b.set(false);
-                    r.set_sensitive(true);
-                };
-                if row.is_active() {
-                    enable_kill_switch(&ui, done);
-                } else {
-                    ui.run_unit(
-                        dbus::stop_unit(dbus::KILLSWITCH_UNIT),
-                        Some("Kill switch off".to_string()),
-                        done,
-                    );
-                }
-            });
-        }
-        ks_group.add(&ks_row);
-        let ks_off_row = adw::ActionRow::builder()
-            .title("Kill switch not available")
-            .subtitle("Kill switch mode is \u{201c}off\u{201d} in your vexos NixOS config")
-            .visible(false)
-            .build();
-        ks_group.add(&ks_off_row);
-        root.add(&ks_group);
 
         // ── Account ──────────────────────────────────────────────────────
         let account_group = adw::PreferencesGroup::builder()
@@ -183,8 +140,6 @@ impl SettingsPage {
         Self {
             root,
             protocol_row,
-            ks_row,
-            ks_off_row,
             account_row,
             sign_in_btn,
             change_btn,
@@ -207,21 +162,8 @@ impl SettingsPage {
             if let Some(i) = PROTOCOLS.iter().position(|p| *p == status.protocol_setting) {
                 self.protocol_row.set_selected(i as u32);
             }
-            self.ks_row.set_active(status.killswitch);
             self.syncing.set(false);
         }
-
-        // Kill switch
-        let ks_available = status.killswitch_mode != KillSwitchMode::Off;
-        self.ks_row.set_visible(ks_available);
-        self.ks_off_row.set_visible(!ks_available);
-        self.ks_row.set_subtitle(match status.killswitch_mode {
-            KillSwitchMode::Always => {
-                "Blocks all traffic outside the VPN tunnel. Always on at boot; \
-                 turning it off asks for your password and lasts until reboot."
-            }
-            _ => "Blocks all traffic outside the VPN tunnel",
-        });
 
         // Account
         let editable = status.credentials_editable;

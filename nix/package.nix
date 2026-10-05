@@ -55,8 +55,6 @@ craneLib.buildPackage (commonArgs // {
   passthru = { inherit cargoArtifacts commonArgs craneLib; };
 
   postInstall = ''
-    install -Dm644 assets/icons/hicolor/scalable/apps/vex-vpn.svg \
-      $out/share/icons/hicolor/scalable/apps/vex-vpn.svg
     install -Dm644 assets/icons/hicolor/256x256/apps/vex-vpn.png \
       $out/share/icons/hicolor/256x256/apps/vex-vpn.png
     for icon in network-vpn-symbolic network-vpn-disabled-symbolic \

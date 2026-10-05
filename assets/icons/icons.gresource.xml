@@ -6,10 +6,11 @@
     <file>hicolor/symbolic/apps/network-vpn-acquiring-symbolic.svg</file>
     <file>hicolor/symbolic/apps/network-vpn-no-route-symbolic.svg</file>
   </gresource>
-  <gresource prefix="/com/vex/vpn/icons/hicolor/scalable/apps">
-    <file>hicolor/scalable/apps/vex-vpn.svg</file>
+  <!-- App icon for in-app lookups ("vex-vpn", e.g. the About window). -->
+  <gresource prefix="/com/vex/vpn/icons/256x256/apps">
+    <file alias="vex-vpn.png">hicolor/256x256/apps/vex-vpn.png</file>
   </gresource>
   <gresource prefix="/com/vex/vpn/branding">
-    <file>vpn2.png</file>
+    <file alias="vex-vpn.png">vpn.png</file>
   </gresource>
 </gresources>
